@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.alexandre.bible-search",
+  "name": "Bible widget",
+  "version": "0.3.1",
+  "author": "Alexandre",
+  "license": "MIT",
+  "description": "An interactive book icon with an anchored Bible search panel.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Bible",
+    "description": "Open an anchored Bible search panel",
+    "category": "Reference",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

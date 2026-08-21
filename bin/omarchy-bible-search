@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly APP_NAME="omarchy-bible-search"
+readonly SCRIPT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly DATA_ROOT="${BIBLE_SEARCH_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-bible-search}"
+readonly BOOK_ROOT="$DATA_ROOT/books"
+readonly BUNDLED_BOOK_ROOT="$SCRIPT_ROOT/data/books"
+readonly CACHE_ROOT="$DATA_ROOT/cache"
+readonly WEB_ZIP_URL="https://ebible.org/Scriptures/engwebp_vpl.zip"
+
+declare -A BOOK_NAMES=(
+  [GEN]="Genesis" [EXO]="Exodus" [LEV]="Leviticus" [NUM]="Numbers" [DEU]="Deuteronomy"
+  [JOS]="Joshua" [JDG]="Judges" [RUT]="Ruth" [1SA]="1-Samuel" [2SA]="2-Samuel"
+  [1KI]="1-Kings" [2KI]="2-Kings" [1CH]="1-Chronicles" [2CH]="2-Chronicles"
+  [EZR]="Ezra" [NEH]="Nehemiah" [EST]="Esther" [JOB]="Job" [PSA]="Psalms"
+  [PRO]="Proverbs" [ECC]="Ecclesiastes" [SOL]="Song-of-Solomon" [ISA]="Isaiah"
+  [JER]="Jeremiah" [LAM]="Lamentations" [EZE]="Ezekiel" [DAN]="Daniel"
+  [HOS]="Hosea" [JOE]="Joel" [AMO]="Amos" [OBA]="Obadiah" [JON]="Jonah"
+  [MIC]="Micah" [NAH]="Nahum" [HAB]="Habakkuk" [ZEP]="Zephaniah"
+  [HAG]="Haggai" [ZEC]="Zechariah" [MAL]="Malachi" [MAT]="Matthew"
+  [MAR]="Mark" [LUK]="Luke" [JOH]="John" [ACT]="Acts" [ROM]="Romans"
+  [1CO]="1-Corinthians" [2CO]="2-Corinthians" [GAL]="Galatians" [EPH]="Ephesians"
+  [PHI]="Philippians" [COL]="Colossians" [1TH]="1-Thessalonians" [2TH]="2-Thessalonians"
+  [1TI]="1-Timothy" [2TI]="2-Timothy" [TIT]="Titus" [PHM]="Philemon"
+  [HEB]="Hebrews" [JAM]="James" [1PE]="1-Peter" [2PE]="2-Peter"
+  [1JO]="1-John" [2JO]="2-John" [3JO]="3-John" [JUD]="Jude" [REV]="Revelation"
+)
+
+die() {
+  printf '%s: %s\n' "$APP_NAME" "$*" >&2
+  exit 1
+}
+
+status_line() {
+  printf 'STATUS\t%s\n' "$*"
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  omarchy-bible-search setup
+  omarchy-bible-search search QUERY
+  omarchy-bible-search browse
+  omarchy-bible-search read BOOK CHAPTER:VERSE
+  omarchy-bible-search random
+
+The default corpus is the public-domain World English Bible Protestant (WEBP).
+EOF
+}
+
+dir_has_books() {
+  [[ -d "$1" ]] && find "$1" -maxdepth 1 -type f -name '*.txt' -print -quit | grep -q .
+}
+
+active_book_root() {
+  if dir_has_books "$BOOK_ROOT"; then
+    printf '%s' "$BOOK_ROOT"
+  elif dir_has_books "$BUNDLED_BOOK_ROOT"; then
+    printf '%s' "$BUNDLED_BOOK_ROOT"
+  fi
+}
+
+require_data() {
+  if [[ -z "$(active_book_root)" ]]; then
+    status_line "No Bible data is bundled or installed. Run setup to download WEBP."
+    return 1
+  fi
+}
+
+trim_line() {
+  local value="$1"
+  value="${value//$'\r'/}"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+write_book_file() {
+  local book_file="$1"
+  local verse="$2"
+  [[ -z "$book_file" || -z "$verse" ]] && return 0
+  printf '%s\n' "$verse" >> "$book_file"
+}
+
+split_corpus() {
+  local source_file="$1"
+  local target_root="$2"
+  local line code book_file current_file="" current_verse=""
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="$(trim_line "$line")"
+    [[ -z "$line" ]] && continue
+
+    if [[ "$line" =~ ^([A-Z0-9]{3})[[:space:]]+[0-9]+:[0-9]+[[:space:]] ]]; then
+      write_book_file "$current_file" "$current_verse"
+      code="${BASH_REMATCH[1]}"
+      book="${BOOK_NAMES[$code]:-}"
+      current_file=""
+      current_verse="$line"
+      if [[ -n "$book" ]]; then
+        current_file="$target_root/$book.txt"
+      fi
+    elif [[ -n "$current_verse" ]]; then
+      current_verse="$current_verse $line"
+    fi
+  done < "$source_file"
+
+  write_book_file "$current_file" "$current_verse"
+}
+
+setup_corpus() {
+  if dir_has_books "$BUNDLED_BOOK_ROOT"; then
+    printf 'Bundled WEBP corpus is ready at %s\n' "$BUNDLED_BOOK_ROOT"
+    return 0
+  fi
+
+  command -v curl >/dev/null 2>&1 || die "curl is required for setup"
+  command -v unzip >/dev/null 2>&1 || die "unzip is required for setup"
+
+  mkdir -p "$CACHE_ROOT"
+  local archive="$CACHE_ROOT/engwebp_vpl.zip"
+  local archive_part="$archive.part"
+  local vpl="$CACHE_ROOT/engwebp_vpl.txt"
+  local vpl_part="$vpl.part"
+  local staging="$DATA_ROOT/books.new.$$"
+
+  trap '[[ -n "${staging:-}" && -d "$staging" ]] && rm -rf -- "$staging"' EXIT
+
+  printf 'Downloading the public-domain World English Bible (WEBP)…\n'
+  curl --fail --location --retry 3 --connect-timeout 10 --max-time 180 \
+    --output "$archive_part" "$WEB_ZIP_URL"
+  mv -f -- "$archive_part" "$archive"
+  unzip -p "$archive" engwebp_vpl.txt > "$vpl_part"
+  mv -f -- "$vpl_part" "$vpl"
+
+  mkdir -p "$staging"
+  split_corpus "$vpl" "$staging"
+
+  if ! find "$staging" -maxdepth 1 -type f -name '*.txt' -print -quit | grep -q .; then
+    die "the downloaded corpus did not contain readable book files"
+  fi
+
+  if [[ -d "$BOOK_ROOT" ]]; then
+    mv -- "$BOOK_ROOT" "$DATA_ROOT/books.backup.$(date +%s)"
+  fi
+  mv -- "$staging" "$BOOK_ROOT"
+  staging=""
+  trap - EXIT
+
+  printf 'Installed WEBP at %s\n' "$BOOK_ROOT"
+  printf 'Source: %s\n' "$WEB_ZIP_URL"
+}
+
+search_corpus() {
+  local query="${1:-}" root=""
+  local matches="" match payload book_code chapter_verse reference verse
+  local trimmed_query="" book_name="" chapter="" requested_verse=""
+  local code="" reference_file="" reference_prefix="" reference_mode=0
+
+  require_data || return 0
+  root="$(active_book_root)"
+  if [[ -z "$query" ]]; then
+    status_line "Type a phrase, word, or reference text to search."
+    return 0
+  fi
+
+  trimmed_query="$(trim_line "$query")"
+  if [[ "$trimmed_query" =~ ^(.+)[[:space:]]+([0-9]+)(:([0-9]+))?:?$ ]]; then
+    book_name="$(trim_line "${BASH_REMATCH[1]}")"
+    chapter="${BASH_REMATCH[2]}"
+    requested_verse="${BASH_REMATCH[4]:-}"
+    code="$(book_code_for_name "$book_name")"
+
+    if [[ -n "$code" ]]; then
+      reference_mode=1
+      reference_file="$root/${BOOK_NAMES[$code]}.txt"
+      if [[ -n "$requested_verse" ]]; then
+        reference_prefix="$code $chapter:$requested_verse"
+      else
+        reference_prefix="$code $chapter:"
+      fi
+      matches="$(awk -v prefix="$reference_prefix" '
+        index($0, prefix) == 1 &&
+        (prefix ~ /:$/ || substr($0, length(prefix) + 1, 1) ~ /[[:space:]]/) {
+          print FILENAME ":" $0
+        }
+      ' "$reference_file" | head -n 80 || true)"
+    fi
+  fi
+
+  if [[ "$reference_mode" -eq 0 ]]; then
+    if command -v rg >/dev/null 2>&1; then
+      matches="$(rg --no-heading --color=never --fixed-strings --ignore-case --max-count 80 -- "$query" "$root" | head -n 80 || true)"
+    else
+      matches="$(grep -R -I -i -F -- "$query" "$root" | head -n 80 || true)"
+    fi
+  fi
+
+  if [[ -z "$matches" ]]; then
+    status_line "No matches for: $query"
+    return 0
+  fi
+
+  while IFS= read -r match; do
+    [[ -z "$match" ]] && continue
+    payload="${match#*:}"
+    book_code="${payload%% *}"
+    payload="${payload#* }"
+    chapter_verse="${payload%% *}"
+    reference="$book_code $chapter_verse"
+    verse="${payload#* }"
+    [[ -z "$reference" || -z "$verse" ]] && continue
+    printf 'RESULT\t%s\t%s\n' "$reference" "$verse"
+  done <<< "$matches"
+}
+
+read_reference() {
+  local reference="${1:-}" line="" root=""
+  require_data || return 1
+  root="$(active_book_root)"
+  [[ -n "$reference" ]] || die "read expects a reference such as GEN 1:1"
+
+  line="$(awk -v ref="$reference" 'index($0, ref " ") == 1 { print; found=1 } END { if (!found) exit 1 }' "$root"/*.txt || true)"
+  [[ -n "$line" ]] || die "reference not found: $reference"
+
+  if command -v less >/dev/null 2>&1; then
+    printf '%s\n' "$line" | less -R
+  elif command -v more >/dev/null 2>&1; then
+    printf '%s\n' "$line" | more
+  else
+    printf '%s\n' "$line"
+  fi
+}
+
+browse_corpus() {
+  local root=""
+  require_data || return 1
+  root="$(active_book_root)"
+  command -v fff >/dev/null 2>&1 || die "fff is required for browsing; install it, then try again"
+  export FFF_CD_ON_EXIT=0
+  export EDITOR="${EDITOR:-less}"
+  fff "$root"
+}
+
+random_verse() {
+  local selected="" file="" index=0 root=""
+  local files=()
+  require_data || return 1
+  root="$(active_book_root)"
+  while IFS= read -r -d '' file; do
+    files+=("$file")
+  done < <(find "$root" -maxdepth 1 -type f -name '*.txt' -print0)
+  ((${#files[@]} > 0)) || die "no book files found"
+  index=$((RANDOM % ${#files[@]}))
+  selected="${files[$index]}"
+  [[ -n "$selected" ]] || die "no book files found"
+  shuf -n 1 "$selected"
+}
+
+normalize_book_name() {
+  local value="${1,,}"
+  value="${value//-/ }"
+  value="${value//./}"
+  value="$(printf '%s' "$value" | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//')"
+  printf '%s' "$value"
+}
+
+book_code_for_name() {
+  local needle="$(normalize_book_name "$1")"
+  local code filename candidate
+
+  for code in "${!BOOK_NAMES[@]}"; do
+    filename="${BOOK_NAMES[$code]}"
+    candidate="$(normalize_book_name "$filename")"
+    if [[ "$needle" == "$candidate" || "${needle^^}" == "$code" ]]; then
+      printf '%s' "$code"
+      return 0
+    fi
+  done
+}
+
+main() {
+  case "${1:-}" in
+    setup)
+      setup_corpus
+      ;;
+    search)
+      shift
+      search_corpus "${*:-}"
+      ;;
+    browse)
+      browse_corpus
+      ;;
+    read)
+      shift
+      read_reference "${*:-}"
+      ;;
+    random)
+      random_verse
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+  esac
+}
+
+main "$@"
