@@ -2,7 +2,8 @@
 set -euo pipefail
 
 readonly APP_NAME="omarchy-bible-search"
-readonly SCRIPT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly SCRIPT_ROOT
 readonly DATA_ROOT="${BIBLE_SEARCH_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/omarchy-bible-search}"
 readonly BOOK_ROOT="$DATA_ROOT/books"
 readonly BUNDLED_BOOK_ROOT="$SCRIPT_ROOT/data/books"
@@ -304,7 +305,8 @@ normalize_book_name() {
 }
 
 book_code_for_name() {
-  local needle="$(normalize_book_name "$1")"
+  local needle
+  needle="$(normalize_book_name "$1")"
   local code filename candidate
 
   for code in "${!BOOK_NAMES[@]}"; do
