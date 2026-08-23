@@ -8,6 +8,12 @@ readonly BOOK_ROOT="$DATA_ROOT/books"
 readonly BUNDLED_BOOK_ROOT="$SCRIPT_ROOT/data/books"
 readonly CACHE_ROOT="$DATA_ROOT/cache"
 readonly WEB_ZIP_URL="https://ebible.org/Scriptures/engwebp_vpl.zip"
+# eBible does not publish an independent checksum for this archive. This is
+# the SHA-256 of the exact 4,281,529-byte artifact downloaded directly from
+# WEB_ZIP_URL on 2026-08-23. It detects later replacement or corruption, but
+# does not authenticate the origin of the initial artifact.
+readonly WEB_ZIP_SHA256="b6f55cc787b1201b68dcfde8a1216e1a61ae6b3cc38748456cf58bdb5e95fc1c"
+readonly WEB_ZIP_MAX_BYTES=$((16 * 1024 * 1024))
 
 declare -A BOOK_NAMES=(
   [GEN]="Genesis" [EXO]="Exodus" [LEV]="Leviticus" [NUM]="Numbers" [DEU]="Deuteronomy"
@@ -116,6 +122,8 @@ setup_corpus() {
   fi
 
   command -v curl >/dev/null 2>&1 || die "curl is required for setup"
+  command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required for setup"
+  command -v stat >/dev/null 2>&1 || die "stat is required for setup"
   command -v unzip >/dev/null 2>&1 || die "unzip is required for setup"
 
   mkdir -p "$CACHE_ROOT"
@@ -125,13 +133,42 @@ setup_corpus() {
   local vpl_part="$vpl.part"
   local staging="$DATA_ROOT/books.new.$$"
 
-  trap '[[ -n "${staging:-}" && -d "$staging" ]] && rm -rf -- "$staging"' EXIT
+  trap '[[ -n "${staging:-}" && -d "$staging" ]] && rm -rf -- "$staging"; rm -f -- "$archive_part" "$vpl_part"' EXIT
+  rm -f -- "$archive_part" "$vpl_part"
 
   printf 'Downloading the public-domain World English Bible (WEBP)…\n'
   curl --fail --location --retry 3 --connect-timeout 10 --max-time 180 \
+    --max-filesize "$WEB_ZIP_MAX_BYTES" \
     --output "$archive_part" "$WEB_ZIP_URL"
+
+  local archive_size=""
+  if ! archive_size="$(stat -c '%s' "$archive_part")"; then
+    die "could not determine the downloaded WEBP archive size"
+  fi
+  if (( archive_size > WEB_ZIP_MAX_BYTES )); then
+    die "downloaded WEBP archive exceeds the ${WEB_ZIP_MAX_BYTES}-byte size limit"
+  fi
+
+  if ! printf '%s  %s\n' "$WEB_ZIP_SHA256" "$archive_part" | sha256sum --check --strict --status; then
+    die "downloaded WEBP archive failed SHA-256 verification"
+  fi
+
+  if ! unzip -tq "$archive_part" >/dev/null; then
+    die "downloaded WEBP archive failed ZIP integrity validation"
+  fi
+
+  local archive_listing=""
+  if ! archive_listing="$(unzip -Z1 "$archive_part")"; then
+    die "could not inspect downloaded WEBP archive contents"
+  fi
+  if [[ "$(grep -Fxc 'engwebp_vpl.txt' <<< "$archive_listing")" -ne 1 ]]; then
+    die "downloaded WEBP archive did not contain exactly one engwebp_vpl.txt member"
+  fi
+
+  # Read one fixed member instead of extracting archive paths to disk.
+  unzip -p "$archive_part" engwebp_vpl.txt > "$vpl_part"
+  [[ -s "$vpl_part" ]] || die "downloaded WEBP archive contained an empty corpus"
   mv -f -- "$archive_part" "$archive"
-  unzip -p "$archive" engwebp_vpl.txt > "$vpl_part"
   mv -f -- "$vpl_part" "$vpl"
 
   mkdir -p "$staging"

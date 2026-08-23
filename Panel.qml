@@ -85,7 +85,7 @@ Panel {
     if (index < 0 || index >= resultModel.count) return
     var row = resultModel.get(index)
     var text = row.reference + " — " + row.verse
-    Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(text) + " | wl-copy"])
+    Quickshell.execDetached(["wl-copy", "--", text])
     root.close()
   }
 

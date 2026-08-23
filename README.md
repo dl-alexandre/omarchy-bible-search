@@ -48,7 +48,10 @@ BIBLE_SEARCH_BIN="$HOME/.config/omarchy/plugins/dev.alexandre.bible-search/bin/o
 - The normal install makes no network request. Network access is only used if the bundled corpus is missing and `setup` is run.
 - The plugin stores data under `~/.local/share/omarchy-bible-search/` unless `BIBLE_SEARCH_HOME` is set.
 - The unmodified WEBP text is bundled in `data/books/`. eBible.org identifies it as public domain; the source URL is retained in the CLI helper.
+- If `setup` is used, the archive is capped at 16 MiB, checked as a ZIP, required to contain exactly one `engwebp_vpl.txt` member, and verified against SHA-256 `b6f55cc787b1201b68dcfde8a1216e1a61ae6b3cc38748456cf58bdb5e95fc1c`. eBible does not publish an independent checksum sidecar; this pin is the exact 4,281,529-byte artifact downloaded directly from the [eBible archive URL](https://ebible.org/Scriptures/engwebp_vpl.zip) on 2026-08-23. It detects later replacement or corruption, but cannot authenticate the origin of that initial download.
 - The plugin does not use `sudo`, install background services, edit Omarchy’s packaged files, or start a second Quickshell process.
+
+The remaining trust boundary is the user-owned Omarchy/Quickshell runtime and the existing local executables it invokes (`wl-copy`, `curl`, `sha256sum`, `unzip`, `awk`, `grep`, `find`, `shuf`, `fff`, and the configured pager). The plugin passes search results to `wl-copy` as direct argv and does not evaluate them as shell code. A live Omarchy session still runs plugin QML with the user’s session privileges; this repository does not sandbox that runtime.
 
 ## Development and validation
 
@@ -56,6 +59,7 @@ Run these checks from the repository root on an Omarchy system:
 
 ```sh
 bash -n bin/omarchy-bible-search
+bash tests/test-bible-search.sh
 omarchy plugin validate .
 qmllint -I "$OMARCHY_PATH/shell" BarWidget.qml Panel.qml
 ```
