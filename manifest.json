@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "dev.alexandre.bible-search",
   "name": "Bible widget",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "author": "Alexandre",
   "license": "MIT",
-  "description": "An interactive book icon with an anchored Bible search panel.",
+  "description": "An interactive book icon with an anchored offline Bible search panel.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "Bible",
-    "description": "Open an anchored Bible search panel",
+    "description": "Search an offline Bible from an anchored panel",
     "category": "Reference",
     "allowMultiple": false,
     "defaultSection": "right"

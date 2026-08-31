@@ -17,23 +17,211 @@ assert_contains() {
 }
 
 search_output="$($BIN search 'For God so loved the world')"
-assert_contains "$search_output" $'RESULT\tJOH 3:16\t'
+assert_contains "$search_output" $'RESULT\tJohn 3:16\t'
 
-reference_output="$($BIN search 'John 2:1')"
-assert_contains "$reference_output" $'RESULT\tJOH 2:1\t'
+reference_output="$($BIN search 'Jn 2:1')"
+assert_contains "$reference_output" $'RESULT\tJohn 2:1\t'
 
 chapter_output="$($BIN search 'John 2:')"
-assert_contains "$chapter_output" $'RESULT\tJOH 2:1\t'
+assert_contains "$chapter_output" $'RESULT\tJohn 2:1\t'
+
+range_output="$($BIN search '1 Cor 13:4-7')"
+assert_contains "$range_output" $'RESULT\t1 Corinthians 13:4\t'
+assert_contains "$range_output" $'RESULT\t1 Corinthians 13:7\t'
+
+chapter_read_output="$($BIN chapter 'Jn 3')"
+assert_contains "$chapter_read_output" $'RESULT\tJohn 3:16\t'
+
+catalog_output="$($BIN catalog)"
+assert_contains "$catalog_output" $'BOOK\tGenesis\t50'
+assert_contains "$catalog_output" $'BOOK\tRevelation\t22'
+[[ "$(grep -c $'^BOOK\t' <<< "$catalog_output")" -eq 66 ]] || fail 'catalog did not contain all 66 books'
+
+state_root="$(mktemp -d)"
+state_output="$(BIBLE_SEARCH_HOME="$state_root/data" "$BIN" state-init)"
+assert_contains "$state_output" $'STATE\t'
+[[ -d "$state_root/data" ]] || fail 'state-init did not create the user data directory'
+rm -rf -- "$state_root"
+
+voice_status_output="$($BIN voice-status)"
+assert_contains "$voice_status_output" $'VOICE\t'
+
+daily_root="$(mktemp -d)"
+daily_first="$(BIBLE_SEARCH_HOME="$daily_root" "$BIN" daily)"
+daily_same_day="$(BIBLE_SEARCH_HOME="$daily_root" "$BIN" daily)"
+[[ "$daily_first" == "$daily_same_day" ]] || fail 'daily verse changed within the same day'
+assert_contains "$daily_first" $'RESULT\t'
+sed -i 's/^[0-9-]*/1970-01-01/' "$daily_root/daily-verse-state"
+daily_next="$(BIBLE_SEARCH_HOME="$daily_root" "$BIN" daily)"
+[[ "$daily_first" != "$daily_next" ]] || fail 'daily verse repeated on the next selection day'
+[[ ! -e "$daily_root/daily-verse.lock" ]] || fail 'daily verse lock was not cleaned up'
+rm -rf -- "$daily_root"
+
+invalid_range_output="$($BIN search 'John 3:17-16')"
+assert_contains "$invalid_range_output" $'STATUS\tInvalid reference range: John 3:17-16'
+
+read_output="$($BIN read 'John 3:16')"
+assert_contains "$read_output" 'JOH 3:16 '
+
+panel_source="$(< "$REPO_ROOT/Panel.qml")"
 
 if grep -Fn -- '"bash", "-c"' "$REPO_ROOT/Panel.qml"; then
   fail 'clipboard path still crosses a shell boundary'
 fi
-assert_contains "$(sed -n '1,125p' "$REPO_ROOT/Panel.qml")" 'Quickshell.execDetached(["wl-copy", "--", text])'
+assert_contains "$panel_source" 'copyProc.command = ["wl-copy", "--", text]'
+assert_contains "$panel_source" 'Quickshell.execDetached(["omarchy-launch-tui", root.scriptPath, "browse"])'
+assert_contains "$panel_source" 'property int searchGeneration: 0'
+assert_contains "$panel_source" 'property bool searchStopPending: false'
+assert_contains "$panel_source" 'root.activeSearchGeneration !== root.searchGeneration'
+assert_contains "$panel_source" 'readonly property var ttsCandidates: ["espeak-ng", "espeak", "spd-say"]'
+assert_contains "$panel_source" 'ttsProc.command = [root.ttsEngine, "--", row.verse]'
+assert_contains "$panel_source" 'chapterProc.command = [root.scriptPath, "chapter", match[1] + " " + match[2]]'
+assert_contains "$panel_source" 'function stopNarration()'
+assert_contains "$panel_source" 'property var narrationWords: []'
+assert_contains "$panel_source" 'readonly property real narrationProgress:'
+assert_contains "$panel_source" 'function skipNarration(delta)'
+assert_contains "$panel_source" 'text: "Read along"'
+assert_contains "$panel_source" 'property bool readerMode: false'
+assert_contains "$panel_source" 'function buildReaderPages(queue)'
+assert_contains "$panel_source" 'function turnReaderPage(targetPage)'
+assert_contains "$panel_source" 'function openReader(index)'
+assert_contains "$panel_source" 'function requestNarration(queue, mode, startIndex)'
+assert_contains "$panel_source" 'root.requestNarration(root.readerChapterQueue, "chapter", root.readerSelectedVerseIndex)'
+assert_contains "$panel_source" 'text: "BOOK VIEW"'
+assert_contains "$panel_source" '"READ FROM HERE" : "READ CHAPTER"'
+assert_contains "$panel_source" 'property bool readerTurning: false'
+assert_contains "$panel_source" 'property real readerTurnAngle: 0'
+assert_contains "$panel_source" 'property real readerTurnProgress: 0'
+assert_contains "$panel_source" 'id: readerSpineShadow'
+assert_contains "$panel_source" 'axis.y: 1'
+assert_contains "$panel_source" 'layer.smooth: true'
+assert_contains "$panel_source" 'id: readerPageSwapTimer'
+assert_contains "$panel_source" 'id: readerMasthead'
+assert_contains "$panel_source" 'id: readerPageProgress'
+assert_contains "$panel_source" 'id: readerPaperInset'
+assert_contains "$panel_source" 'id: readerCornerFold'
+assert_contains "$panel_source" 'ShapePath {'
+assert_contains "$panel_source" 'id: readerStopButton'
+assert_contains "$panel_source" 'text: "STOP"'
+assert_contains "$panel_source" 'id: readerLibrary'
+assert_contains "$panel_source" 'id: readerChapterGrid'
+assert_contains "$panel_source" 'function toggleCurrentBookmark()'
+assert_contains "$panel_source" 'function recordRecent()'
+assert_contains "$panel_source" 'atomicWrites: true'
+assert_contains "$panel_source" 'stateFile.setText(JSON.stringify({'
+assert_contains "$panel_source" 'if (root.reduceMotion) {'
+assert_contains "$panel_source" 'function calibrateNarrationTiming()'
+assert_contains "$panel_source" 'root.calibrateNarrationTiming()'
+assert_contains "$panel_source" 'text: "REDUCED MOTION"'
+assert_contains "$panel_source" 'property bool readerStateHydrated: false'
+assert_contains "$panel_source" 'if (root.readerStateHydrated) return'
+assert_contains "$panel_source" 'function moveLibraryCursor(dx, dy)'
+assert_contains "$panel_source" 'function activateLibraryCursor()'
+assert_contains "$panel_source" 'onTabRequested: function(direction)'
+assert_contains "$panel_source" '"No saved verses yet"'
+assert_contains "$panel_source" '"No recent chapters yet"'
+assert_contains "$panel_source" 'id: reducedMotionMouse'
+assert_contains "$panel_source" 'PanelToolTip {'
+assert_contains "$panel_source" 'root.readerActionFeedback = "Saved " + row.reference'
+assert_contains "$panel_source" 'delegate: CursorSurface {'
+assert_contains "$panel_source" 'function removeBookmarkAt(index)'
+assert_contains "$panel_source" 'onDeleteRequested: {'
+assert_contains "$panel_source" 'tooltipText: "Remove from Saved"'
+assert_contains "$panel_source" '"↑↓ select  ·  ENTER open  ·  X remove"'
+assert_contains "$panel_source" 'id: panelScroll'
+assert_contains "$panel_source" 'ScrollBar.vertical.policy: content.implicitHeight > height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff'
+assert_contains "$panel_source" 'contentHeight: popup.fittedContentHeight(content.implicitHeight, Style.space(720))'
+assert_contains "$panel_source" '"No books match “" + root.readerBookFilter + "”"'
+assert_contains "$panel_source" 'text: "Press Escape to clear the filter."'
+assert_contains "$panel_source" 'function installVoiceEngine()'
+assert_contains "$panel_source" 'Quickshell.execDetached(["omarchy-launch-terminal", "omarchy", "pkg", "add", "espeak-ng"])'
+assert_contains "$panel_source" 'if (root.ttsChecked && !root.ttsAvailable && !ttsDetectProc.running) root.detectTts()'
+assert_contains "$panel_source" 'id: voiceSetupCard'
+assert_contains "$panel_source" 'text: "Reading aloud needs a local voice"'
+assert_contains "$panel_source" 'text: "CHECK AGAIN"'
+assert_contains "$panel_source" 'property bool piperReady: false'
+assert_contains "$panel_source" 'id: voiceStatusProc'
+assert_contains "$panel_source" 'speechPrepareProc.command = [root.scriptPath, "prepare-speech", row.verse, String(root.narrationSpeed)]'
+assert_contains "$panel_source" 'var voicePrefix = root.usePiper ? "Neural voice · " : "Reading · "'
+assert_contains "$panel_source" 'id: resultCardContent'
+assert_contains "$panel_source" 'id: resultCopyMouse'
+assert_contains "$(< "$BIN")" "readonly PIPER_MODEL=\"\$PIPER_ROOT/voices/en_US-ryan-medium.onnx\""
+assert_contains "$(< "$BIN")" "(( \${#text} <= 4000 ))"
+assert_contains "$(< "$BIN")" "paplay \"\$speech_file\""
+assert_contains "$(< "$BIN")" 'trap cleanup_speech EXIT INT TERM'
+assert_contains "$(< "$BIN")" "kill \"\$speech_child\" 2>/dev/null || true"
+assert_contains "$panel_source" 'property int narrationWarmupRemainingMs: 0'
+assert_contains "$panel_source" 'ttsProc.command = ["paplay", root.preparedSpeechPath]'
+assert_contains "$panel_source" 'root.narrationEstimatedMs = Math.max(700, Number(durationMs) || root.narrationEstimatedMs)'
+assert_contains "$panel_source" 'function wordCadenceWeight(word)'
+assert_contains "$panel_source" 'function narrationCadenceWeight()'
+assert_contains "$panel_source" 'var spokenDuration = Math.max(1, root.narrationEstimatedMs - leadIn)'
+assert_contains "$panel_source" 'interval: 40'
+assert_contains "$panel_source" 'id: speechPrefetchProc'
+assert_contains "$panel_source" 'function startSpeechPrefetch()'
+assert_contains "$panel_source" 'root.prefetchRequestIndex = nextIndex'
+assert_contains "$panel_source" 'root.prefetchedSpeechIndex === root.narrationIndex'
+assert_contains "$panel_source" 'root.startSpeechPrefetch()'
+assert_contains "$panel_source" 'function cleanupPrefetchedSpeech()'
+assert_contains "$panel_source" 'function rotateTopicSuggestions()'
+assert_contains "$panel_source" 'model: root.topicSuggestions'
+assert_contains "$panel_source" 'var hour = new Date().getHours()'
+assert_contains "$panel_source" 'function toggleNarrationPause()'
+assert_contains "$panel_source" 'function resumeNarrationProcessBeforeCancel()'
+assert_contains "$panel_source" '["kill", root.narrationPaused ? "-STOP" : "-CONT", String(ttsProc.processId)]'
+assert_contains "$panel_source" 'id: narrationCompleteTimer'
+assert_contains "$panel_source" 'root.narrationCardPinned = false'
+assert_contains "$panel_source" 'property real narrationSpeed: 1.0'
+assert_contains "$panel_source" 'property string preferredVoice: "male"'
+assert_contains "$panel_source" 'property bool dailyOnOpen: true'
+assert_contains "$panel_source" 'id: settingsPanel'
+assert_contains "$panel_source" 'Accessible.name: "Reading settings"'
+assert_contains "$panel_source" 'root.prefetchedSpeechReference === row.reference'
+assert_contains "$panel_source" 'root.topSpeechReady ? "Ready · Read"'
+assert_contains "$(< "$BIN")" 'speech speed must be 0.85, 1, or 1.15'
+if "$BIN" prepare-speech "test" 2 >/dev/null 2>&1; then
+  fail 'prepare-speech accepted an out-of-range speed'
+fi
+assert_contains "$panel_source" 'function showDailyVerse()'
+assert_contains "$panel_source" 'id: dailyProc'
+assert_contains "$panel_source" 'id: dailySuggestion'
+assert_contains "$panel_source" 'onClicked: root.showDailyVerse()'
+assert_contains "$panel_source" 'enabled: !dailyProc.running'
+assert_contains "$panel_source" 'iconText: dailyProc.running ? "…" : "Daily"'
+assert_contains "$panel_source" 'function parseDailyOutput(raw)'
+assert_contains "$panel_source" 'property bool dailyView: false'
+assert_contains "$panel_source" 'root.dailyView = true'
+assert_contains "$panel_source" 'resultModel.append({ reference: fields[1], verse: fields.slice(2).join(" ") })'
+assert_contains "$panel_source" 'if (root.dailyOnOpen && root.query.trim() === "" && resultModel.count === 0 && !dailyProc.running)'
+assert_contains "$panel_source" 'visible: !root.readerMode && root.query.trim() === ""'
+assert_contains "$panel_source" 'text: dailyProc.running ?'
+assert_contains "$panel_source" 'function preloadTopSpeech()'
+assert_contains "$panel_source" 'id: topSpeechProc'
+assert_contains "$panel_source" 'root.topSpeechReference === row.reference && root.topSpeechVerse === row.verse'
+assert_contains "$panel_source" 'root.startPiperPlayback(topPath, topDuration, row)'
+assert_contains "$panel_source" 'readonly property bool readAlongDuplicatesTop:'
+assert_contains "$panel_source" 'visible: !(index === 0 && root.readAlongDuplicatesTop)'
+assert_contains "$panel_source" '["comfort", "anxiety", "courage", "rest", "grief", "healing"]'
+if grep -Fq -- 'id: browseButton' <<< "$panel_source"; then
+  fail 'Browse Books still appears in the widget UI'
+fi
+assert_contains "$(< "$BIN")" 'daily_verse()'
+assert_contains "$(< "$BIN")" 'greatest_common_divisor()'
+assert_contains "$(< "$BIN")" 'command -v ffprobe >/dev/null 2>&1 || die "ffprobe is required for neural voice timing"'
+assert_contains "$(< "$BIN")" "\"\$CACHE_ROOT\"/speech.*.wav) rm -f -- \"\$speech_file\""
+assert_contains "$(< "$REPO_ROOT/README.md")" 'keeps reading when the anchored panel is hidden'
+assert_contains "$(< "$REPO_ROOT/README.md")" 'paginated reading view'
 
-assert_contains "$(sed -n '1,170p' "$BIN")" 'sha256sum --check --strict --status'
-assert_contains "$(sed -n '1,170p' "$BIN")" 'unzip -tq'
-assert_contains "$(sed -n '1,170p' "$BIN")" '--max-filesize'
-assert_contains "$(sed -n '1,180p' "$BIN")" "stat -c '%s'"
+close_block="$(sed -n '/function close()/,/^  }/p' "$REPO_ROOT/Panel.qml")"
+if grep -Fq -- 'root.stopNarration()' <<< "$close_block"; then
+  fail 'closing the anchored panel stopped narration'
+fi
+assert_contains "$(sed -n '1,120p' "$REPO_ROOT/BarWidget.qml")" 'tooltipText: root.narrationActive ? "Bible Search · reading" : "Bible Search"'
+
+assert_contains "$(< "$BIN")" 'sha256sum --check --strict --status'
+assert_contains "$(< "$BIN")" 'unzip -tq'
+assert_contains "$(< "$BIN")" '--max-filesize'
+assert_contains "$(< "$BIN")" "stat -c '%s'"
 
 setup_root="$(mktemp -d)"
 fake_path="$setup_root/fake-bin"

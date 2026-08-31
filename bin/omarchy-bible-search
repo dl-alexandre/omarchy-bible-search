@@ -8,6 +8,11 @@ readonly DATA_ROOT="${BIBLE_SEARCH_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/om
 readonly BOOK_ROOT="$DATA_ROOT/books"
 readonly BUNDLED_BOOK_ROOT="$SCRIPT_ROOT/data/books"
 readonly CACHE_ROOT="$DATA_ROOT/cache"
+readonly PIPER_ROOT="$DATA_ROOT/piper"
+readonly PIPER_BIN="$PIPER_ROOT/venv/bin/piper"
+readonly PIPER_MODEL="$PIPER_ROOT/voices/en_US-ryan-medium.onnx"
+readonly PIPER_CONFIG="$PIPER_MODEL.json"
+readonly DAILY_STATE="$DATA_ROOT/daily-verse-state"
 readonly WEB_ZIP_URL="https://ebible.org/Scriptures/engwebp_vpl.zip"
 # eBible does not publish an independent checksum for this archive. This is
 # the SHA-256 of the exact 4,281,529-byte artifact downloaded directly from
@@ -33,6 +38,12 @@ declare -A BOOK_NAMES=(
   [HEB]="Hebrews" [JAM]="James" [1PE]="1-Peter" [2PE]="2-Peter"
   [1JO]="1-John" [2JO]="2-John" [3JO]="3-John" [JUD]="Jude" [REV]="Revelation"
 )
+readonly BOOK_CODES=(
+  GEN EXO LEV NUM DEU JOS JDG RUT 1SA 2SA 1KI 2KI 1CH 2CH EZR NEH EST JOB PSA PRO
+  ECC SOL ISA JER LAM EZE DAN HOS JOE AMO OBA JON MIC NAH HAB ZEP HAG ZEC MAL MAT
+  MAR LUK JOH ACT ROM 1CO 2CO GAL EPH PHI COL 1TH 2TH 1TI 2TI TIT PHM HEB JAM 1PE
+  2PE 1JO 2JO 3JO JUD REV
+)
 
 die() {
   printf '%s: %s\n' "$APP_NAME" "$*" >&2
@@ -48,9 +59,17 @@ usage() {
 Usage:
   omarchy-bible-search setup
   omarchy-bible-search search QUERY
+  omarchy-bible-search chapter BOOK CHAPTER
+  omarchy-bible-search catalog
+  omarchy-bible-search state-init
+  omarchy-bible-search voice-status
+  omarchy-bible-search speak TEXT
+  omarchy-bible-search prepare-speech TEXT [SPEED]
+  omarchy-bible-search speech-cleanup PATH
   omarchy-bible-search browse
   omarchy-bible-search read BOOK CHAPTER:VERSE
   omarchy-bible-search random
+  omarchy-bible-search daily
 
 The default corpus is the public-domain World English Bible Protestant (WEBP).
 EOF
@@ -193,8 +212,9 @@ setup_corpus() {
 search_corpus() {
   local query="${1:-}" root=""
   local matches="" match payload book_code chapter_verse reference verse
-  local trimmed_query="" book_name="" chapter="" requested_verse=""
-  local code="" reference_file="" reference_prefix="" reference_mode=0
+  local trimmed_query="" normalized_query="" book_name="" chapter="" requested_verse=""
+  local requested_end=""
+  local code="" reference_file="" reference_mode=0
 
   require_data || return 0
   root="$(active_book_root)"
@@ -204,26 +224,36 @@ search_corpus() {
   fi
 
   trimmed_query="$(trim_line "$query")"
-  if [[ "$trimmed_query" =~ ^(.+)[[:space:]]+([0-9]+)(:([0-9]+))?:?$ ]]; then
+  normalized_query="$(printf '%s' "$trimmed_query" | sed -E 's/[[:space:]]*-[[:space:]]*/-/g')"
+  if [[ "$normalized_query" =~ ^(.+)[[:space:]]+([0-9]+)(:([0-9]+)(-([0-9]+))?)?:?$ ]]; then
     book_name="$(trim_line "${BASH_REMATCH[1]}")"
     chapter="${BASH_REMATCH[2]}"
     requested_verse="${BASH_REMATCH[4]:-}"
+    requested_end="${BASH_REMATCH[6]:-${requested_verse}}"
     code="$(book_code_for_name "$book_name")"
 
     if [[ -n "$code" ]]; then
       reference_mode=1
       reference_file="$root/${BOOK_NAMES[$code]}.txt"
       if [[ -n "$requested_verse" ]]; then
-        reference_prefix="$code $chapter:$requested_verse"
+        if [[ "$requested_end" != "$requested_verse" ]] && (( 10#$requested_end < 10#$requested_verse )); then
+          status_line "Invalid reference range: $query"
+          return 0
+        fi
+        matches="$(awk -v code="$code" -v chapter="$chapter" -v start="$requested_verse" -v end="$requested_end" '
+          $1 == code {
+            split($2, location, ":")
+            if (location[1] == chapter && location[2] + 0 >= start + 0 && location[2] + 0 <= end + 0) print $0
+          }
+        ' "$reference_file" | head -n 80 || true)"
       else
-        reference_prefix="$code $chapter:"
+        matches="$(awk -v code="$code" -v chapter="$chapter" '
+          $1 == code {
+            split($2, location, ":")
+            if (location[1] == chapter) print $0
+          }
+        ' "$reference_file" | head -n 80 || true)"
       fi
-      matches="$(awk -v prefix="$reference_prefix" '
-        index($0, prefix) == 1 &&
-        (prefix ~ /:$/ || substr($0, length(prefix) + 1, 1) ~ /[[:space:]]/) {
-          print FILENAME ":" $0
-        }
-      ' "$reference_file" | head -n 80 || true)"
     fi
   fi
 
@@ -242,22 +272,191 @@ search_corpus() {
 
   while IFS= read -r match; do
     [[ -z "$match" ]] && continue
-    payload="${match#*:}"
+    if [[ "$reference_mode" -eq 1 ]]; then
+      payload="$match"
+    else
+      payload="${match#*:}"
+    fi
     book_code="${payload%% *}"
     payload="${payload#* }"
     chapter_verse="${payload%% *}"
-    reference="$book_code $chapter_verse"
+    reference="$(canonical_book_name_for_code "$book_code") $chapter_verse"
     verse="${payload#* }"
-    [[ -z "$reference" || -z "$verse" ]] && continue
+    [[ "$reference" == " $chapter_verse" || -z "$verse" ]] && continue
     printf 'RESULT\t%s\t%s\n' "$reference" "$verse"
   done <<< "$matches"
 }
 
+chapter_corpus() {
+  local reference="${1:-}" root="" normalized_reference="" book_name="" chapter="" code="" line=""
+  local payload="" chapter_verse="" verse="" canonical_book=""
+
+  require_data || return 0
+  root="$(active_book_root)"
+  normalized_reference="$(trim_line "$reference")"
+  if [[ ! "$normalized_reference" =~ ^(.+)[[:space:]]+([0-9]+):?$ ]]; then
+    status_line "Enter a chapter such as John 3"
+    return 0
+  fi
+
+  book_name="$(trim_line "${BASH_REMATCH[1]}")"
+  chapter="${BASH_REMATCH[2]}"
+  code="$(book_code_for_name "$book_name")"
+  if [[ -z "$code" ]]; then
+    status_line "No matching book for: $book_name"
+    return 0
+  fi
+
+  canonical_book="$(canonical_book_name_for_code "$code")"
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    payload="${line#* }"
+    chapter_verse="${payload%% *}"
+    verse="${payload#* }"
+    printf 'RESULT\t%s %s\t%s\n' "$canonical_book" "$chapter_verse" "$verse"
+  done < <(awk -v code="$code" -v chapter="$chapter" '
+    $1 == code {
+      split($2, location, ":")
+      if (location[1] == chapter) print $0
+    }
+  ' "$root/${BOOK_NAMES[$code]}.txt")
+}
+
+catalog_corpus() {
+  local root="" code="" book_file="" chapter_count=""
+  require_data || return 0
+  root="$(active_book_root)"
+
+  for code in "${BOOK_CODES[@]}"; do
+    book_file="$root/${BOOK_NAMES[$code]}.txt"
+    [[ -f "$book_file" ]] || continue
+    chapter_count="$(awk -v code="$code" '
+      $1 == code {
+        split($2, location, ":")
+        if (location[1] + 0 > highest) highest = location[1] + 0
+      }
+      END { print highest + 0 }
+    ' "$book_file")"
+    printf 'BOOK\t%s\t%s\n' "$(canonical_book_name_for_code "$code")" "$chapter_count"
+  done
+}
+
+state_init() {
+  mkdir -p -- "$DATA_ROOT"
+  printf 'STATE\t%s\n' "$DATA_ROOT/reader-state.json"
+}
+
+voice_status() {
+  if [[ -x "$PIPER_BIN" && -s "$PIPER_MODEL" && -s "$PIPER_CONFIG" ]] && command -v paplay >/dev/null 2>&1; then
+    printf 'VOICE\tpiper\n'
+  elif command -v espeak-ng >/dev/null 2>&1; then
+    printf 'VOICE\tespeak-ng\n'
+  elif command -v espeak >/dev/null 2>&1; then
+    printf 'VOICE\tespeak\n'
+  elif command -v spd-say >/dev/null 2>&1; then
+    printf 'VOICE\tspd-say\n'
+  else
+    printf 'VOICE\tnone\n'
+  fi
+}
+
+prepare_speech() {
+  local text="${1:-}"
+  local speed="${2:-1}"
+  local length_scale=""
+  [[ -n "$text" ]] || die "prepare-speech requires text"
+  (( ${#text} <= 4000 )) || die "speech text exceeds the 4000-character limit"
+  [[ "$speed" =~ ^(0\.85|1|1\.0|1\.15)$ ]] || die "speech speed must be 0.85, 1, or 1.15"
+  length_scale="$(awk -v speed="$speed" 'BEGIN { printf "%.4f", 1.12 / speed }')"
+  [[ -x "$PIPER_BIN" && -s "$PIPER_MODEL" && -s "$PIPER_CONFIG" ]] || die "Piper neural voice is not ready"
+  command -v ffprobe >/dev/null 2>&1 || die "ffprobe is required for neural voice timing"
+
+  mkdir -p -- "$CACHE_ROOT"
+  local speech_file="" duration_ms=""
+  speech_file="$(mktemp "$CACHE_ROOT/speech.XXXXXX.wav")"
+  trap 'rm -f -- "${speech_file:-}"' EXIT INT TERM
+  printf '%s\n' "$text" | "$PIPER_BIN" \
+    --model "$PIPER_MODEL" \
+    --config "$PIPER_CONFIG" \
+    --output-file "$speech_file" \
+    --length-scale "$length_scale" \
+    --sentence-silence 0.35 \
+    --volume 1.05
+  duration_ms="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$speech_file" \
+    | awk '{ printf "%d", ($1 * 1000) + 0.5 }')"
+  [[ "$duration_ms" =~ ^[0-9]+$ ]] || die "could not measure generated speech"
+  trap - EXIT INT TERM
+  printf 'AUDIO\t%s\t%s\n' "$speech_file" "$duration_ms"
+}
+
+cleanup_speech_file() {
+  local speech_file="${1:-}"
+  case "$speech_file" in
+    "$CACHE_ROOT"/speech.*.wav) rm -f -- "$speech_file" ;;
+    *) die "refusing to remove a path outside the speech cache" ;;
+  esac
+}
+
+speak_text() {
+  local text="${1:-}"
+  [[ -n "$text" ]] || die "speak requires text"
+  (( ${#text} <= 4000 )) || die "speech text exceeds the 4000-character limit"
+
+  if [[ -x "$PIPER_BIN" && -s "$PIPER_MODEL" && -s "$PIPER_CONFIG" ]] && command -v paplay >/dev/null 2>&1; then
+    mkdir -p -- "$CACHE_ROOT"
+    local speech_file=""
+    local speech_child=""
+    speech_file="$(mktemp "$CACHE_ROOT/speech.XXXXXX.wav")"
+    cleanup_speech() {
+      if [[ -n "$speech_child" ]]; then
+        kill "$speech_child" 2>/dev/null || true
+        wait "$speech_child" 2>/dev/null || true
+      fi
+      rm -f -- "$speech_file"
+    }
+    trap cleanup_speech EXIT INT TERM
+    printf '%s\n' "$text" | "$PIPER_BIN" \
+      --model "$PIPER_MODEL" \
+      --config "$PIPER_CONFIG" \
+      --output-file "$speech_file" \
+      --length-scale 1.12 \
+      --sentence-silence 0.35 \
+      --volume 1.05 &
+    speech_child=$!
+    wait "$speech_child"
+    speech_child=""
+    paplay "$speech_file" &
+    speech_child=$!
+    wait "$speech_child"
+    speech_child=""
+    return 0
+  fi
+
+  if command -v espeak-ng >/dev/null 2>&1; then
+    exec espeak-ng -v en-us+m3 -s 135 -p 32 -a 150 -- "$text"
+  elif command -v espeak >/dev/null 2>&1; then
+    exec espeak -v en-us+m3 -s 135 -p 32 -a 150 -- "$text"
+  elif command -v spd-say >/dev/null 2>&1; then
+    exec spd-say --wait -- "$text"
+  fi
+  die "no supported local voice engine is available"
+}
+
 read_reference() {
   local reference="${1:-}" line="" root=""
+  local normalized_reference="" book_name="" chapter="" verse="" code=""
   require_data || return 1
   root="$(active_book_root)"
   [[ -n "$reference" ]] || die "read expects a reference such as GEN 1:1"
+
+  normalized_reference="$(trim_line "$reference")"
+  if [[ "$normalized_reference" =~ ^(.+)[[:space:]]+([0-9]+):([0-9]+)$ ]]; then
+    book_name="$(trim_line "${BASH_REMATCH[1]}")"
+    chapter="${BASH_REMATCH[2]}"
+    verse="${BASH_REMATCH[3]}"
+    code="$(book_code_for_name "$book_name")"
+    [[ -n "$code" ]] && reference="$code $chapter:$verse"
+  fi
 
   line="$(awk -v ref="$reference" 'index($0, ref " ") == 1 { print; found=1 } END { if (!found) exit 1 }' "$root"/*.txt || true)"
   [[ -n "$line" ]] || die "reference not found: $reference"
@@ -296,6 +495,83 @@ random_verse() {
   shuf -n 1 "$selected"
 }
 
+greatest_common_divisor() {
+  local a="$1" b="$2" remainder=0
+  while (( b != 0 )); do
+    remainder=$((a % b))
+    a="$b"
+    b="$remainder"
+  done
+  printf '%s' "$a"
+}
+
+emit_result_line() {
+  local line="$1" code="" location="" verse="" canonical=""
+  code="${line%% *}"
+  line="${line#* }"
+  location="${line%% *}"
+  verse="${line#* }"
+  canonical="$(canonical_book_name_for_code "$code")"
+  [[ -n "$canonical" && -n "$location" && "$verse" != "$line" ]] || die "selected verse was malformed"
+  printf 'RESULT\t%s %s\t%s\n' "$canonical" "$location" "$verse"
+}
+
+daily_verse() {
+  local root="" file="" today="" state_date="" counter="" start="" step="" stored_total=""
+  local total=0 random_value=0 position=0 selected="" lock_dir="$DATA_ROOT/daily-verse.lock"
+  local files=()
+  require_data || return 1
+  root="$(active_book_root)"
+  mkdir -p -- "$DATA_ROOT"
+
+  if ! mkdir -- "$lock_dir" 2>/dev/null; then
+    die "daily verse selection is already in progress"
+  fi
+  trap 'rmdir -- "$lock_dir" 2>/dev/null || true' EXIT INT TERM
+
+  for code in "${BOOK_CODES[@]}"; do
+    file="$root/${BOOK_NAMES[$code]}.txt"
+    [[ -f "$file" ]] || continue
+    files+=("$file")
+    total=$((total + $(wc -l < "$file")))
+  done
+  (( total > 0 )) || die "no verses found"
+  today="$(date +%F)"
+
+  if [[ -f "$DAILY_STATE" ]]; then
+    IFS=$'\t' read -r state_date counter start step stored_total < "$DAILY_STATE" || true
+  fi
+  if [[ ! "$counter" =~ ^[0-9]+$ || ! "$start" =~ ^[0-9]+$ || ! "$step" =~ ^[0-9]+$ \
+      || "$stored_total" != "$total" || "$start" -ge "$total" || "$step" -le 0 ]]; then
+    counter=0
+    random_value="$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')"
+    start=$((random_value % total))
+    step=$(((random_value / total) % total))
+    (( step == 0 )) && step=1
+    while [[ "$(greatest_common_divisor "$step" "$total")" -ne 1 ]]; do
+      step=$(((step + 1) % total))
+      (( step == 0 )) && step=1
+    done
+  elif [[ "$state_date" != "$today" ]]; then
+    counter=$((counter + 1))
+    if (( counter >= total )); then
+      counter=0
+      start=$(((start + step) % total))
+    fi
+  fi
+
+  local state_part="$DAILY_STATE.part.$$"
+  umask 077
+  printf '%s\t%s\t%s\t%s\t%s\n' "$today" "$counter" "$start" "$step" "$total" > "$state_part"
+  mv -f -- "$state_part" "$DAILY_STATE"
+  position=$(((start + counter * step) % total))
+  selected="$(awk -v target="$((position + 1))" 'NR == target { print; exit }' "${files[@]}")"
+  [[ -n "$selected" ]] || die "could not select the daily verse"
+  emit_result_line "$selected"
+  trap - EXIT INT TERM
+  rmdir -- "$lock_dir"
+}
+
 normalize_book_name() {
   local value="${1,,}"
   value="${value//-/ }"
@@ -304,10 +580,84 @@ normalize_book_name() {
   printf '%s' "$value"
 }
 
+canonical_book_name_for_code() {
+  [[ "$1" =~ ^[A-Z0-9]{3}$ ]] || return 0
+  local book="${BOOK_NAMES[$1]:-}"
+  book="${book//-/ }"
+  printf '%s' "$book"
+}
+
 book_code_for_name() {
   local needle
   needle="$(normalize_book_name "$1")"
   local code filename candidate
+
+  case "$needle" in
+    gen|ge) printf 'GEN'; return 0 ;;
+    ex|exo) printf 'EXO'; return 0 ;;
+    lev) printf 'LEV'; return 0 ;;
+    num|nm) printf 'NUM'; return 0 ;;
+    deut|dt) printf 'DEU'; return 0 ;;
+    jos|josh) printf 'JOS'; return 0 ;;
+    jdg|judg) printf 'JDG'; return 0 ;;
+    rut) printf 'RUT'; return 0 ;;
+    '1 sam'|1sa|1sam) printf '1SA'; return 0 ;;
+    '2 sam'|2sa|2sam) printf '2SA'; return 0 ;;
+    '1 kgs'|1ki|1kin) printf '1KI'; return 0 ;;
+    '2 kgs'|2ki|2kin) printf '2KI'; return 0 ;;
+    '1 chr'|1ch|1chron) printf '1CH'; return 0 ;;
+    '2 chr'|2ch|2chron) printf '2CH'; return 0 ;;
+    ezr) printf 'EZR'; return 0 ;;
+    neh) printf 'NEH'; return 0 ;;
+    est) printf 'EST'; return 0 ;;
+    psa|ps|psalm) printf 'PSA'; return 0 ;;
+    prov|pro) printf 'PRO'; return 0 ;;
+    eccl|ecc) printf 'ECC'; return 0 ;;
+    song|songs|sos) printf 'SOL'; return 0 ;;
+    isa) printf 'ISA'; return 0 ;;
+    jer) printf 'JER'; return 0 ;;
+    lam) printf 'LAM'; return 0 ;;
+    ezek|eze) printf 'EZE'; return 0 ;;
+    dan) printf 'DAN'; return 0 ;;
+    hos) printf 'HOS'; return 0 ;;
+    joe) printf 'JOE'; return 0 ;;
+    amo) printf 'AMO'; return 0 ;;
+    oba) printf 'OBA'; return 0 ;;
+    jon) printf 'JON'; return 0 ;;
+    mic) printf 'MIC'; return 0 ;;
+    nah) printf 'NAH'; return 0 ;;
+    hab) printf 'HAB'; return 0 ;;
+    zep) printf 'ZEP'; return 0 ;;
+    hag) printf 'HAG'; return 0 ;;
+    zec) printf 'ZEC'; return 0 ;;
+    mal) printf 'MAL'; return 0 ;;
+    matt|mt) printf 'MAT'; return 0 ;;
+    mk|mrk) printf 'MAR'; return 0 ;;
+    lk) printf 'LUK'; return 0 ;;
+    jn|jhn) printf 'JOH'; return 0 ;;
+    act) printf 'ACT'; return 0 ;;
+    rom|ro) printf 'ROM'; return 0 ;;
+    '1 cor'|1co|1cor) printf '1CO'; return 0 ;;
+    '2 cor'|2co|2cor) printf '2CO'; return 0 ;;
+    gal|ga) printf 'GAL'; return 0 ;;
+    eph|ep) printf 'EPH'; return 0 ;;
+    phil|php) printf 'PHI'; return 0 ;;
+    col) printf 'COL'; return 0 ;;
+    '1 thess'|'1 th'|1th|1thess) printf '1TH'; return 0 ;;
+    '2 thess'|'2 th'|2th|2thess) printf '2TH'; return 0 ;;
+    '1 tim'|'1 ti'|1ti|1tim) printf '1TI'; return 0 ;;
+    '2 tim'|'2 ti'|2ti|2tim) printf '2TI'; return 0 ;;
+    phm|phile) printf 'PHM'; return 0 ;;
+    heb) printf 'HEB'; return 0 ;;
+    jas) printf 'JAM'; return 0 ;;
+    '1 pet'|1pe|1pet) printf '1PE'; return 0 ;;
+    '2 pet'|2pe|2pet) printf '2PE'; return 0 ;;
+    '1 john'|'1 jo'|1jo|1jn|1john) printf '1JO'; return 0 ;;
+    '2 john'|'2 jo'|2jo|2jn|2john) printf '2JO'; return 0 ;;
+    '3 john'|'3 jo'|3jo|3jn|3john) printf '3JO'; return 0 ;;
+    jud) printf 'JUD'; return 0 ;;
+    rev|re) printf 'REV'; return 0 ;;
+  esac
 
   for code in "${!BOOK_NAMES[@]}"; do
     filename="${BOOK_NAMES[$code]}"
@@ -328,6 +678,31 @@ main() {
       shift
       search_corpus "${*:-}"
       ;;
+    chapter)
+      shift
+      chapter_corpus "${*:-}"
+      ;;
+    catalog)
+      catalog_corpus
+      ;;
+    state-init)
+      state_init
+      ;;
+    voice-status)
+      voice_status
+      ;;
+    speak)
+      shift
+      speak_text "${1:-}"
+      ;;
+    prepare-speech)
+      shift
+      prepare_speech "${1:-}" "${2:-1}"
+      ;;
+    speech-cleanup)
+      shift
+      cleanup_speech_file "${1:-}"
+      ;;
     browse)
       browse_corpus
       ;;
@@ -337,6 +712,9 @@ main() {
       ;;
     random)
       random_verse
+      ;;
+    daily)
+      daily_verse
       ;;
     -h|--help|help)
       usage

@@ -8,6 +8,7 @@ BarWidget {
   moduleName: "dev.alexandre.bible-search"
 
   readonly property bool opened: panelLoader.item ? panelLoader.item.opened === true : false
+  readonly property bool narrationActive: panelLoader.item ? panelLoader.item.narrationActive === true : false
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -40,7 +41,7 @@ BarWidget {
       bar: root.bar
       text: "󰂿"
       slotSize: Style.bar.statusSlot
-      tooltipText: "Bible Search"
+      tooltipText: root.narrationActive ? "Bible Search · reading" : "Bible Search"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.LeftButton) root.toggle()
     }
