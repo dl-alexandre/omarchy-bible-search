@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+export BIBLE_SEARCH_BIN="${BIBLE_SEARCH_BIN:-$SCRIPT_ROOT/bin/omarchy-bible-search}"
+
+gpu_ui="$("$BIBLE_SEARCH_BIN" gpu-ui-path)" || exit 1
+
+export SDL_VIDEODRIVER="${SDL_VIDEODRIVER:-wayland}"
+exec "$gpu_ui" --manual "$@"

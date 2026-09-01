@@ -12,7 +12,6 @@ readonly PIPER_ROOT="$DATA_ROOT/piper"
 readonly PIPER_BIN="$PIPER_ROOT/venv/bin/piper"
 readonly PIPER_MODEL="$PIPER_ROOT/voices/en_US-ryan-medium.onnx"
 readonly PIPER_CONFIG="$PIPER_MODEL.json"
-readonly DAILY_STATE="$DATA_ROOT/daily-verse-state"
 readonly WEB_ZIP_URL="https://ebible.org/Scriptures/engwebp_vpl.zip"
 # eBible does not publish an independent checksum for this archive. This is
 # the SHA-256 of the exact 4,281,529-byte artifact downloaded directly from
@@ -58,6 +57,9 @@ usage() {
   cat <<'EOF'
 Usage:
   omarchy-bible-search setup
+  omarchy-bible-search doctor
+  omarchy-bible-search gpu-ui-path
+  omarchy-bible-search link-ui [PATH]
   omarchy-bible-search search QUERY
   omarchy-bible-search chapter BOOK CHAPTER
   omarchy-bible-search catalog
@@ -73,6 +75,92 @@ Usage:
 
 The default corpus is the public-domain World English Bible Protestant (WEBP).
 EOF
+}
+
+find_gpu_ui() {
+  local path=""
+  local candidates=()
+  if [[ -n ${GPU_UI_BIN:-} ]]; then
+    candidates+=("$GPU_UI_BIN")
+  fi
+  candidates+=(
+    "$SCRIPT_ROOT/bin/gpu-ui"
+    "$HOME/.local/bin/gpu-ui"
+    "$HOME/Documents/Codex/2026-08-30/build-a-retained-gpu-ui-runtime/build/gpu-ui"
+    "$SCRIPT_ROOT/../build-a-retained-gpu-ui-runtime/build/gpu-ui"
+  )
+  for path in "${candidates[@]}"; do
+    if [[ -x $path ]]; then
+      printf '%s' "$path"
+      return 0
+    fi
+  done
+  if command -v gpu-ui >/dev/null 2>&1; then
+    command -v gpu-ui
+    return 0
+  fi
+  return 1
+}
+
+notify() {
+  local title="$1" body="$2"
+  printf '%s: %s\n' "$APP_NAME" "$body" >&2
+  if command -v omarchy-notification-send >/dev/null 2>&1; then
+    omarchy-notification-send "$title" "$body"
+  fi
+}
+
+gpu_ui_path_cmd() {
+  local path=""
+  if path="$(find_gpu_ui)"; then
+    printf '%s\n' "$path"
+    return 0
+  fi
+  notify "Bible reader" "gpu-ui not found. Build the retained GPU runtime, then run: omarchy-bible-search link-ui"
+  return 1
+}
+
+link_ui() {
+  local src="${1:-}" dest="${XDG_BIN_HOME:-$HOME/.local/bin}/gpu-ui"
+  if [[ -z $src ]]; then
+    src="$(find_gpu_ui)" || die "gpu-ui not found. Set GPU_UI_BIN or pass the binary path to link-ui"
+  fi
+  [[ -x $src ]] || die "not an executable: $src"
+  mkdir -p -- "$(dirname -- "$dest")"
+  ln -sfn -- "$(cd -- "$(dirname -- "$src")" && pwd)/$(basename -- "$src")" "$dest"
+  printf 'STATUS\tlinked\t%s\n' "$dest"
+}
+
+doctor() {
+  local gpu_ui="" books="missing" copy="missing" reader="missing"
+  if gpu_ui="$(find_gpu_ui)"; then
+    reader="ok"
+    printf 'STATUS\tgpu-ui\t%s\n' "$gpu_ui"
+  else
+    printf 'STATUS\tgpu-ui\tmissing\n'
+  fi
+  if command -v wl-copy >/dev/null 2>&1; then
+    copy="ok"
+    printf 'STATUS\twl-copy\tok\n'
+  else
+    printf 'STATUS\twl-copy\tmissing\n'
+  fi
+  if [[ -n "$(active_book_root)" ]]; then
+    books="ok"
+    printf 'STATUS\tbooks\tok\n'
+  else
+    printf 'STATUS\tbooks\tmissing\n'
+  fi
+  if [[ $reader == ok && $books == ok ]]; then
+    printf 'STATUS\tok\n'
+    return 0
+  fi
+  if [[ $reader != ok ]]; then
+    printf 'STATUS\tneed-reader\n'
+    return 1
+  fi
+  printf 'STATUS\tneed-books\n'
+  return 1
 }
 
 dir_has_books() {
@@ -495,16 +583,6 @@ random_verse() {
   shuf -n 1 "$selected"
 }
 
-greatest_common_divisor() {
-  local a="$1" b="$2" remainder=0
-  while (( b != 0 )); do
-    remainder=$((a % b))
-    a="$b"
-    b="$remainder"
-  done
-  printf '%s' "$a"
-}
-
 emit_result_line() {
   local line="$1" code="" location="" verse="" canonical=""
   code="${line%% *}"
@@ -517,17 +595,11 @@ emit_result_line() {
 }
 
 daily_verse() {
-  local root="" file="" today="" state_date="" counter="" start="" step="" stored_total=""
-  local total=0 random_value=0 position=0 selected="" lock_dir="$DATA_ROOT/daily-verse.lock"
+  local root="" file=""
+  local total=0 position=0 selected="" day_of_year=0
   local files=()
   require_data || return 1
   root="$(active_book_root)"
-  mkdir -p -- "$DATA_ROOT"
-
-  if ! mkdir -- "$lock_dir" 2>/dev/null; then
-    die "daily verse selection is already in progress"
-  fi
-  trap 'rmdir -- "$lock_dir" 2>/dev/null || true' EXIT INT TERM
 
   for code in "${BOOK_CODES[@]}"; do
     file="$root/${BOOK_NAMES[$code]}.txt"
@@ -536,40 +608,12 @@ daily_verse() {
     total=$((total + $(wc -l < "$file")))
   done
   (( total > 0 )) || die "no verses found"
-  today="$(date +%F)"
 
-  if [[ -f "$DAILY_STATE" ]]; then
-    IFS=$'\t' read -r state_date counter start step stored_total < "$DAILY_STATE" || true
-  fi
-  if [[ ! "$counter" =~ ^[0-9]+$ || ! "$start" =~ ^[0-9]+$ || ! "$step" =~ ^[0-9]+$ \
-      || "$stored_total" != "$total" || "$start" -ge "$total" || "$step" -le 0 ]]; then
-    counter=0
-    random_value="$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')"
-    start=$((random_value % total))
-    step=$(((random_value / total) % total))
-    (( step == 0 )) && step=1
-    while [[ "$(greatest_common_divisor "$step" "$total")" -ne 1 ]]; do
-      step=$(((step + 1) % total))
-      (( step == 0 )) && step=1
-    done
-  elif [[ "$state_date" != "$today" ]]; then
-    counter=$((counter + 1))
-    if (( counter >= total )); then
-      counter=0
-      start=$(((start + step) % total))
-    fi
-  fi
-
-  local state_part="$DAILY_STATE.part.$$"
-  umask 077
-  printf '%s\t%s\t%s\t%s\t%s\n' "$today" "$counter" "$start" "$step" "$total" > "$state_part"
-  mv -f -- "$state_part" "$DAILY_STATE"
-  position=$(((start + counter * step) % total))
+  day_of_year="$(date +%j)"
+  position=$((10#$day_of_year % total))
   selected="$(awk -v target="$((position + 1))" 'NR == target { print; exit }' "${files[@]}")"
   [[ -n "$selected" ]] || die "could not select the daily verse"
   emit_result_line "$selected"
-  trap - EXIT INT TERM
-  rmdir -- "$lock_dir"
 }
 
 normalize_book_name() {
@@ -673,6 +717,16 @@ main() {
   case "${1:-}" in
     setup)
       setup_corpus
+      ;;
+    doctor)
+      doctor
+      ;;
+    gpu-ui-path)
+      gpu_ui_path_cmd
+      ;;
+    link-ui)
+      shift
+      link_ui "${1:-}"
       ;;
     search)
       shift

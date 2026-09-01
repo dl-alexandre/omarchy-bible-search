@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Shapes
-import QtQuick.Accessibility
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -11,7 +10,8 @@ Panel {
   id: root
 
   moduleName: "dev.alexandre.bible-search"
-  manageIpc: false
+  ipcTarget: "dev.alexandre.bible-search"
+  manageIpc: true
 
   property var anchorItem: null
   property var hostWidget: null
@@ -86,6 +86,15 @@ Panel {
   property int readerTurnDirection: 1
   property real readerTurnAngle: 0
   property real readerTurnProgress: 0
+  property bool readerDragging: false
+  property bool readerDragMoved: false
+  property bool readerDragWasActive: false
+  property bool readerTurnCrossesChapter: false
+  property real readerDragStartX: 0
+  property int readerTurnApproachDuration: 340
+  property int readerTurnSettleDuration: 420
+  property int readerTurnCancelDuration: 220
+  property real readerFolioPulse: 0
   property bool readerLibraryOpen: false
   property string readerLibraryTab: "books"
   property string readerBookFilter: ""
@@ -127,6 +136,11 @@ Panel {
   readonly property var currentReaderPage: root.readerHasPages
     ? root.readerPages[Math.max(0, Math.min(root.readerPageIndex, root.readerPages.length - 1))]
     : null
+  readonly property var readerTurnPage: root.readerHasPages
+    && root.readerTurnTargetPage >= 0
+    && root.readerTurnTargetPage < root.readerPages.length
+    ? root.readerPages[root.readerTurnTargetPage]
+    : null
   readonly property int readerFocusVerseIndex: root.readerSelectedVerseIndex
   readonly property string readerStatePath: {
     var dataHome = Quickshell.env("XDG_DATA_HOME")
@@ -138,6 +152,14 @@ Panel {
     var path = String(Qt.resolvedUrl("bin/omarchy-bible-search"))
     if (path.indexOf("file://") === 0) path = path.substring(7)
     return decodeURIComponent(path)
+  }
+
+  readonly property color popupForeground: Color.popups.text
+
+  function focusReaderKeyboard() {
+    Qt.callLater(function() {
+      if (root.opened && root.readerMode && keyCatcher) keyCatcher.forceActiveFocus()
+    })
   }
 
   function open() {
@@ -638,6 +660,61 @@ Panel {
     return match ? { book: match[1], chapter: match[2] } : null
   }
 
+  function currentChapterParts() {
+    var match = String(root.readerChapterLabel || "").match(/^(.+)\s+([0-9]+)$/)
+    return match ? { book: match[1], chapter: Number(match[2]) } : null
+  }
+
+  function catalogIndexForBook(book) {
+    var needle = String(book || "").toLowerCase()
+    for (var i = 0; i < bookCatalogModel.count; i++) {
+      if (String(bookCatalogModel.get(i).bookName).toLowerCase() === needle) return i
+    }
+    return -1
+  }
+
+  function adjacentChapter(direction) {
+    var current = root.currentChapterParts()
+    if (!current || direction === 0 || bookCatalogModel.count === 0) return null
+    var idx = root.catalogIndexForBook(current.book)
+    if (idx < 0) return null
+    var book = bookCatalogModel.get(idx)
+    var chapter = current.chapter + direction
+    if (chapter >= 1 && chapter <= Number(book.chapterCount))
+      return { book: book.bookName, chapter: chapter }
+    var nextIdx = idx + direction
+    if (nextIdx < 0 || nextIdx >= bookCatalogModel.count) return null
+    var nextBook = bookCatalogModel.get(nextIdx)
+    return direction > 0
+      ? { book: nextBook.bookName, chapter: 1 }
+      : { book: nextBook.bookName, chapter: Number(nextBook.chapterCount) }
+  }
+
+  function canMoveReader(direction) {
+    if (!root.readerHasPages) return false
+    var target = root.readerPageIndex + direction
+    if (target >= 0 && target < root.readerPages.length) return true
+    return root.adjacentChapter(direction) !== null
+  }
+
+  function advanceReaderChapter(direction) {
+    if (chapterProc.running || root.readerLoading) return false
+    var next = root.adjacentChapter(direction)
+    if (!next) {
+      root.readerActionFeedback = direction > 0 ? "End of the Bible" : "Beginning of the Bible"
+      readerActionFeedbackTimer.restart()
+      return false
+    }
+    root.stopReaderTurnAnimations()
+    root.readerTurning = false
+    root.readerTurnCrossesChapter = false
+    root.readerTurnAngle = 0
+    root.readerTurnProgress = 0
+    var landAtEnd = direction < 0
+    root.openReaderChapter(next.book, next.chapter, "", landAtEnd ? 9999 : 0, landAtEnd ? 9999 : 0)
+    return true
+  }
+
   function buildReaderPages(queue) {
     var pages = []
     var start = 0
@@ -779,6 +856,7 @@ Panel {
     root.narrationStatus = "Opening " + root.readerChapterLabel + "…"
     chapterProc.command = [root.scriptPath, "chapter", root.readerChapterLabel]
     chapterProc.running = true
+    root.focusReaderKeyboard()
   }
 
   function openStoredReader(row) {
@@ -787,6 +865,76 @@ Panel {
     if (!details && row.chapterLabel) details = root.chapterDetails(row.chapterLabel + ":1")
     if (!details) return
     root.openReaderChapter(details.book, details.chapter, row.reference || "", row.pageIndex, row.verseIndex)
+  }
+
+  function stopReaderTurnAnimations() {
+    readerPageTurn.stop()
+    readerPageCancel.stop()
+    readerPageSwapTimer.stop()
+    readerPageResetTimer.stop()
+  }
+
+  function beginReaderCornerDrag(direction, startX) {
+    if (root.reduceMotion || !root.readerHasPages || root.readerTurning) return false
+    var targetPage = root.readerPageIndex + direction
+    var inChapter = targetPage >= 0 && targetPage < root.readerPages.length
+    if (!inChapter && !root.adjacentChapter(direction)) return false
+
+    root.stopReaderTurnAnimations()
+    root.readerTurnCrossesChapter = !inChapter
+    root.readerTurnTargetPage = inChapter ? targetPage : root.readerPageIndex
+    root.readerTurnDirection = direction
+    root.readerDragging = true
+    root.readerDragMoved = false
+    root.readerDragWasActive = false
+    root.readerDragStartX = startX
+    root.readerTurnAngle = 0
+    root.readerTurnProgress = 0
+    root.readerTurning = true
+    return true
+  }
+
+  function updateReaderCornerDrag(currentX) {
+    if (!root.readerDragging) return
+    var distance = root.readerTurnDirection > 0
+      ? root.readerDragStartX - currentX
+      : currentX - root.readerDragStartX
+    var travel = Math.max(1, readerPageSurface.width * 0.42)
+    var ratio = Math.max(0, Math.min(1, distance / travel))
+    root.readerDragMoved = root.readerDragMoved || Math.abs(distance) > 3
+    root.readerTurnProgress = ratio * 0.5
+    root.readerTurnAngle = 0
+  }
+
+  function finishReaderCornerDrag() {
+    if (!root.readerDragging) return
+    var ratio = Math.max(0, Math.min(1, root.readerTurnProgress * 2))
+    var wasDrag = root.readerDragMoved
+    root.readerDragging = false
+    root.readerDragWasActive = wasDrag
+    root.readerTurnCancelDuration = Math.max(120, Math.round(ratio * 300))
+    root.stopReaderTurnAnimations()
+
+    if (!wasDrag) {
+      root.readerTurning = false
+      root.readerTurnAngle = 0
+      root.readerTurnProgress = 0
+      return
+    }
+
+    if (ratio >= 0.46) {
+      if (root.readerTurnCrossesChapter) {
+        root.advanceReaderChapter(root.readerTurnDirection)
+        return
+      }
+      root.readerTurnApproachDuration = Math.max(70, Math.round((1 - ratio) * 200))
+      root.readerTurnSettleDuration = 240
+      readerPageSwapTimer.restart()
+      readerPageResetTimer.restart()
+      readerPageTurn.restart()
+    } else {
+      readerPageCancel.restart()
+    }
   }
 
   function turnReaderPage(targetPage) {
@@ -800,8 +948,12 @@ Panel {
       root.readerTurnProgress = 0
       return
     }
+    root.stopReaderTurnAnimations()
+    root.readerDragWasActive = false
     root.readerTurnTargetPage = nextPage
     root.readerTurnDirection = nextPage > root.readerPageIndex ? 1 : -1
+    root.readerTurnApproachDuration = 200
+    root.readerTurnSettleDuration = 240
     root.readerTurning = true
     root.readerTurnAngle = 0
     root.readerTurnProgress = 0
@@ -811,7 +963,14 @@ Panel {
   }
 
   function moveReaderPage(delta) {
-    root.turnReaderPage(root.readerPageIndex + delta)
+    var direction = delta > 0 ? 1 : -1
+    var target = root.readerPageIndex + delta
+    if (target < 0 || target >= root.readerPages.length) {
+      root.advanceReaderChapter(direction)
+    } else {
+      root.turnReaderPage(target)
+    }
+    root.focusReaderKeyboard()
   }
 
   function syncReaderPageToVerse(index) {
@@ -1101,7 +1260,20 @@ Panel {
   ListModel { id: recentModel }
 
   onReaderBookFilterChanged: root.filterBookCatalog()
-  onReaderPageIndexChanged: root.scheduleReaderStateSave()
+  onReaderModeChanged: {
+    if (root.readerMode) root.focusReaderKeyboard()
+    else {
+      root.stopReaderTurnAnimations()
+      root.readerDragging = false
+      root.readerTurning = false
+      root.readerTurnAngle = 0
+      root.readerTurnProgress = 0
+    }
+  }
+  onReaderLibraryOpenChanged: if (root.readerMode) root.focusReaderKeyboard()
+  onReaderPageIndexChanged: {
+    root.scheduleReaderStateSave()
+  }
   onReaderSelectedVerseIndexChanged: root.scheduleReaderStateSave()
   onReduceMotionChanged: root.scheduleReaderStateSave()
 
@@ -1138,15 +1310,15 @@ Panel {
       NumberAnimation {
         target: root
         property: "readerTurnAngle"
-        to: root.readerTurnDirection > 0 ? -86 : 86
-        duration: 340
+        to: 0
+        duration: root.readerTurnApproachDuration
         easing.type: Easing.OutCubic
       }
       NumberAnimation {
         target: root
         property: "readerTurnProgress"
         to: 0.5
-        duration: 340
+        duration: root.readerTurnApproachDuration
         easing.type: Easing.OutCubic
       }
     }
@@ -1155,16 +1327,63 @@ Panel {
         target: root
         property: "readerTurnAngle"
         to: 0
-        duration: 420
+        duration: root.readerTurnSettleDuration
         easing.type: Easing.InOutCubic
       }
       NumberAnimation {
         target: root
         property: "readerTurnProgress"
         to: 1
-        duration: 420
+        duration: root.readerTurnSettleDuration
         easing.type: Easing.InOutCubic
       }
+    }
+  }
+
+  SequentialAnimation {
+    id: readerPageCancel
+    ParallelAnimation {
+      NumberAnimation {
+        target: root
+        property: "readerTurnAngle"
+        to: 0
+        duration: root.readerTurnCancelDuration
+        easing.type: Easing.OutCubic
+      }
+      NumberAnimation {
+        target: root
+        property: "readerTurnProgress"
+        to: 0
+        duration: root.readerTurnCancelDuration
+        easing.type: Easing.OutCubic
+      }
+    }
+    ScriptAction {
+      script: {
+        root.readerTurning = false
+        root.readerDragWasActive = false
+        root.readerTurnCrossesChapter = false
+        root.readerTurnAngle = 0
+        root.readerTurnProgress = 0
+      }
+    }
+  }
+
+  SequentialAnimation {
+    id: readerFolioPulseAnimation
+    NumberAnimation {
+      target: root
+      property: "readerFolioPulse"
+      to: 1
+      duration: 90
+      easing.type: Easing.OutCubic
+    }
+    NumberAnimation {
+      target: root
+      property: "readerFolioPulse"
+      to: 0
+      duration: 260
+      easing.type: Easing.InOutCubic
     }
   }
 
@@ -1211,7 +1430,7 @@ Panel {
 
   Timer {
     id: readerPageSwapTimer
-    interval: 340
+    interval: root.readerTurnApproachDuration
     repeat: false
     onTriggered: {
       if (!root.readerTurning) return
@@ -1222,12 +1441,16 @@ Panel {
 
   Timer {
     id: readerPageResetTimer
-    interval: 780
+    interval: root.readerTurnApproachDuration + root.readerTurnSettleDuration
     repeat: false
     onTriggered: {
       root.readerTurning = false
+      root.readerDragging = false
+      root.readerDragWasActive = false
       root.readerTurnAngle = 0
       root.readerTurnProgress = 0
+      root.readerTurnApproachDuration = 340
+      root.readerTurnSettleDuration = 420
     }
   }
 
@@ -1540,14 +1763,46 @@ Panel {
       }
       onTextKey: function(text) {
         if (!root.readerMode) {
-          if (text === "r" || text === "R") root.readVerse(root.selectedIndex)
+          if ((text === "o" || text === "O") && resultModel.count > 0) root.openReader(root.selectedIndex)
+          else if (text === "r" || text === "R") root.readVerse(root.selectedIndex)
           else if (text === " ") root.toggleNarrationPause()
           return
         }
         if (text === "b" || text === "B") root.readerLibraryOpen = !root.readerLibraryOpen
         else if (text === "/" && root.readerLibraryOpen && root.readerLibraryTab === "books") readerBookFilterField.forceActiveFocus()
+        else if ((text === "n" || text === "N") && !root.readerLibraryOpen) root.moveReaderPage(1)
+        else if ((text === "p" || text === "P") && !root.readerLibraryOpen) root.moveReaderPage(-1)
         else if ((text === "s" || text === "S") && !root.readerLibraryOpen) root.toggleCurrentBookmark()
         else if ((text === "r" || text === "R") && root.readerSavedPosition) root.openStoredReader(root.readerSavedPosition)
+      }
+
+      // PanelKeyCatcher owns the standard arrows and Vim directions. These
+      // explicit page keys fill the gaps without changing the shared shell
+      // component, and the focus guard keeps them local to Book View.
+      Keys.priority: Keys.BeforeItem
+      Keys.onPressed: function(event) {
+        if (keyCatcher.blocked || !root.readerMode || root.readerLibraryOpen) return
+        if (event.key === Qt.Key_PageDown) {
+          root.moveReaderPage(1)
+          event.accepted = true
+        } else if (event.key === Qt.Key_PageUp) {
+          root.moveReaderPage(-1)
+          event.accepted = true
+        } else if (event.key === Qt.Key_Home) {
+          root.turnReaderPage(0)
+          root.focusReaderKeyboard()
+          event.accepted = true
+        } else if (event.key === Qt.Key_End) {
+          root.turnReaderPage(root.readerPages.length - 1)
+          root.focusReaderKeyboard()
+          event.accepted = true
+        } else if (event.key === Qt.Key_N && (event.modifiers === Qt.NoModifier || event.modifiers === Qt.ShiftModifier)) {
+          root.moveReaderPage(1)
+          event.accepted = true
+        } else if (event.key === Qt.Key_P && (event.modifiers === Qt.NoModifier || event.modifiers === Qt.ShiftModifier)) {
+          root.moveReaderPage(-1)
+          event.accepted = true
+        }
       }
 
       ScrollView {
@@ -1571,15 +1826,15 @@ Panel {
         Item {
           id: header
           width: parent.width
-          height: Style.space(46)
+          height: Math.max(Style.space(36), headerTitle.implicitHeight + headerSubtitle.implicitHeight + Style.space(4))
 
           BorderSurface {
             id: iconBadge
-            width: Style.space(42)
-            height: Style.space(42)
+            width: Style.space(36)
+            height: Style.space(36)
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            color: Style.hoverFillFor(root.barForeground, Color.accent)
+            color: Style.hoverFillFor(root.popupForeground, Color.accent)
             borderSpec: Border.flat(Color.accent, 1)
             radius: Style.cornerRadius
 
@@ -1587,68 +1842,74 @@ Panel {
               anchors.centerIn: parent
               text: "󰂿"
               textFormat: Text.PlainText
-              color: root.barForeground
+              color: root.popupForeground
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
-              font.pixelSize: Style.font.heading
+              font.pixelSize: Style.font.body
             }
           }
 
           Column {
             anchors.left: iconBadge.right
             anchors.leftMargin: Style.spacing.sm
-            anchors.right: settingsButton.left
+            anchors.right: headerActions.left
             anchors.rightMargin: Style.spacing.sm
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.spacing.xs
+            spacing: Style.space(2)
 
             Text {
               id: headerTitle
               text: "Bible Search"
               textFormat: Text.PlainText
-              color: root.barForeground
+              color: root.popupForeground
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.heading
               font.bold: true
+              elide: Text.ElideRight
+              width: parent.width
             }
 
             Text {
+              id: headerSubtitle
               text: "Search by word, phrase, or reference"
               textFormat: Text.PlainText
-              color: root.barForeground
+              color: root.popupForeground
               opacity: 0.62
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+              width: parent.width
             }
           }
 
-          Text {
-            id: closeHint
+          Row {
+            id: headerActions
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            text: "ESC"
-            textFormat: Text.PlainText
-            color: root.barForeground
-            opacity: 0.62
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-            font.letterSpacing: 1
-          }
+            spacing: Style.spacing.xs
 
-          PanelActionButton {
-            id: settingsButton
-            anchors.right: closeHint.left
-            anchors.rightMargin: Style.spacing.sm
-            anchors.verticalCenter: parent.verticalCenter
-            iconText: "󰒓"
-            tooltipText: "Reading settings"
-            foreground: root.barForeground
-            hoverColor: Color.accent
-            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-            focusable: true
-            hasCursor: root.settingsOpen
-            onClicked: root.settingsOpen = !root.settingsOpen
-            Accessible.name: "Reading settings"
-            Accessible.role: Accessible.Button
+            PanelActionButton {
+              id: settingsButton
+              iconText: "󰒓"
+              tooltipText: "Reading settings"
+              foreground: root.popupForeground
+              hoverColor: Color.accent
+              fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+              focusable: true
+              hasCursor: root.settingsOpen
+              onClicked: root.settingsOpen = !root.settingsOpen
+            }
+
+            Text {
+              id: closeHint
+              text: "ESC"
+              textFormat: Text.PlainText
+              color: root.popupForeground
+              opacity: 0.62
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              font.letterSpacing: 1
+              anchors.verticalCenter: parent.verticalCenter
+            }
           }
         }
 
@@ -1658,7 +1919,7 @@ Panel {
           visible: !root.readerMode && root.settingsOpen
           height: visible ? settingsColumn.implicitHeight + Style.spacing.md * 2 : 0
           radius: Style.cornerRadius
-          color: Style.normalFillFor(root.barForeground, Color.accent)
+          color: Style.normalFillFor(root.popupForeground, Color.accent)
           borderSpec: Border.flat(Color.popups.border, 1)
 
           Column {
@@ -1671,7 +1932,7 @@ Panel {
 
             Text {
               text: "READING SETTINGS"
-              color: root.barForeground
+              color: root.popupForeground
               opacity: 0.7
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
@@ -1681,7 +1942,7 @@ Panel {
 
             Row {
               spacing: Style.spacing.sm
-              Text { text: "Voice"; width: Style.space(90); color: root.barForeground; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.bodySmall }
+              Text { text: "Voice"; width: Style.space(90); color: root.popupForeground; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.bodySmall }
               Repeater {
                 model: [{ label: "Male neural", value: "male" }, { label: "System", value: "system" }]
                 delegate: PanelActionButton {
@@ -1689,7 +1950,7 @@ Panel {
                   size: modelData.value === "male" ? Style.space(92) : Style.space(66)
                   implicitHeight: Style.space(26); height: implicitHeight
                   iconText: modelData.label
-                  foreground: root.preferredVoice === modelData.value ? Color.accent : root.barForeground
+                  foreground: root.preferredVoice === modelData.value ? Color.accent : root.popupForeground
                   hoverColor: Color.accent
                   fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                   fontSize: Style.font.caption
@@ -1698,29 +1959,25 @@ Panel {
                     root.preferredVoice = modelData.value
                     root.cleanupTopSpeech(); root.preloadTopSpeech(); root.scheduleReaderStateSave()
                   }
-                  Accessible.name: modelData.label + " voice"
-                  Accessible.role: Accessible.Button
                 }
               }
             }
 
             Row {
               spacing: Style.spacing.sm
-              Text { text: "Speed"; width: Style.space(90); color: root.barForeground; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.bodySmall }
+              Text { text: "Speed"; width: Style.space(90); color: root.popupForeground; font.family: root.bar ? root.bar.fontFamily : Style.font.family; font.pixelSize: Style.font.bodySmall }
               Repeater {
                 model: [0.85, 1, 1.15]
                 delegate: PanelActionButton {
                   required property real modelData
                   size: Style.space(54); implicitHeight: Style.space(26); height: implicitHeight
                   iconText: modelData + "×"
-                  foreground: root.narrationSpeed === modelData ? Color.accent : root.barForeground
+                  foreground: root.narrationSpeed === modelData ? Color.accent : root.popupForeground
                   hoverColor: Color.accent
                   fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                   fontSize: Style.font.caption
                   bordered: true
                   onClicked: root.setNarrationSpeed(modelData)
-                  Accessible.name: "Narration speed " + modelData
-                  Accessible.role: Accessible.Button
                 }
               }
             }
@@ -1730,24 +1987,18 @@ Panel {
               PanelActionButton {
                 size: Style.space(146); implicitHeight: Style.space(26); height: implicitHeight
                 iconText: root.dailyOnOpen ? "Daily on open · On" : "Daily on open · Off"
-                foreground: root.dailyOnOpen ? Color.accent : root.barForeground
+                foreground: root.dailyOnOpen ? Color.accent : root.popupForeground
                 hoverColor: Color.accent; fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                 fontSize: Style.font.caption; bordered: true
                 onClicked: { root.dailyOnOpen = !root.dailyOnOpen; root.scheduleReaderStateSave() }
-                Accessible.name: "Load daily verse on open"
-                Accessible.role: Accessible.CheckBox
-                Accessible.checked: root.dailyOnOpen
               }
               PanelActionButton {
                 size: Style.space(142); implicitHeight: Style.space(26); height: implicitHeight
                 iconText: root.reduceMotion ? "Reduced motion · On" : "Reduced motion · Off"
-                foreground: root.reduceMotion ? Color.accent : root.barForeground
+                foreground: root.reduceMotion ? Color.accent : root.popupForeground
                 hoverColor: Color.accent; fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                 fontSize: Style.font.caption; bordered: true
                 onClicked: { root.reduceMotion = !root.reduceMotion; root.scheduleReaderStateSave() }
-                Accessible.name: "Reduced motion"
-                Accessible.role: Accessible.CheckBox
-                Accessible.checked: root.reduceMotion
               }
             }
           }
@@ -1770,11 +2021,11 @@ Panel {
 
               Rectangle {
                 id: readerSearchButton
-                width: readerSearchLabel.implicitWidth + Style.space(20)
+                width: Style.space(72)
                 height: Style.space(26)
                 radius: Style.cornerRadius
                 color: readerSearchMouse.containsMouse
-                  ? Style.hoverFillFor(root.barForeground, Color.accent)
+                  ? Style.hoverFillFor(root.popupForeground, Color.accent)
                   : "transparent"
                 border.width: 1
                 border.color: Color.popups.border
@@ -1782,12 +2033,11 @@ Panel {
                 Text {
                   id: readerSearchLabel
                   anchors.centerIn: parent
-                  text: "SEARCH"
+                  text: "Search"
                   textFormat: Text.PlainText
-                  color: root.barForeground
+                  color: root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
-                  font.letterSpacing: 0.6
                 }
 
                 MouseArea {
@@ -1801,11 +2051,11 @@ Panel {
 
               Rectangle {
                 id: readerLibraryButton
-                width: readerLibraryLabel.implicitWidth + Style.space(20)
+                width: Style.space(72)
                 height: Style.space(26)
                 radius: Style.cornerRadius
                 color: root.readerLibraryOpen || readerLibraryMouse.containsMouse
-                  ? Style.hoverFillFor(root.barForeground, Color.accent)
+                  ? Style.hoverFillFor(root.popupForeground, Color.accent)
                   : "transparent"
                 border.width: 1
                 border.color: root.readerLibraryOpen ? Color.accent : Color.popups.border
@@ -1813,12 +2063,11 @@ Panel {
                 Text {
                   id: readerLibraryLabel
                   anchors.centerIn: parent
-                  text: "LIBRARY"
+                  text: "Library"
                   textFormat: Text.PlainText
-                  color: root.readerLibraryOpen ? Color.accent : root.barForeground
+                  color: root.readerLibraryOpen ? Color.accent : root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
-                  font.letterSpacing: 0.6
                 }
 
                 MouseArea {
@@ -1826,22 +2075,15 @@ Panel {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.readerLibraryOpen = !root.readerLibraryOpen
+                  onClicked: {
+                    root.readerLibraryOpen = !root.readerLibraryOpen
+                    root.focusReaderKeyboard()
+                  }
                 }
               }
 
-              Text {
-                text: "BOOK VIEW"
-                textFormat: Text.PlainText
-                color: Color.accent
-                font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                font.pixelSize: Style.font.bodySmall
-                font.bold: true
-                anchors.verticalCenter: parent.verticalCenter
-              }
-
               Item {
-                width: Math.max(0, parent.width - readerPageCount.implicitWidth - readerSearchButton.width - readerLibraryButton.width - Style.spacing.xs * 3)
+                width: Math.max(0, parent.width - readerPageCount.implicitWidth - readerSearchButton.width - readerLibraryButton.width - parent.spacing * 2)
                 height: 1
               }
 
@@ -1849,7 +2091,7 @@ Panel {
                 id: readerPageCount
                 text: root.readerHasPages ? (root.readerPageIndex + 1) + " / " + root.readerPages.length : ""
                 textFormat: Text.PlainText
-                color: root.barForeground
+                color: root.popupForeground
                 opacity: 0.58
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.caption
@@ -1863,7 +2105,7 @@ Panel {
               height: root.readerLibraryOpen ? Style.space(350) : 0
               visible: root.readerLibraryOpen
               radius: Style.cornerRadius
-              color: Color.background
+              color: Color.popups.background
               borderSpec: Border.flat(Color.popups.border, 1)
               clip: true
 
@@ -1888,14 +2130,14 @@ Panel {
                       height: Style.space(26)
                       radius: Style.cornerRadius
                       color: root.readerLibraryTab === modelData.key
-                        ? Style.focusFillFor(root.barForeground, Color.accent) : "transparent"
+                        ? Style.focusFillFor(root.popupForeground, Color.accent) : "transparent"
                       border.width: 1
                       border.color: root.readerLibraryTab === modelData.key ? Color.accent : Color.popups.border
                       Text {
                         id: libraryTabLabel
                         anchors.centerIn: parent
                         text: parent.modelData.label
-                        color: root.readerLibraryTab === parent.modelData.key ? Color.accent : root.barForeground
+                        color: root.readerLibraryTab === parent.modelData.key ? Color.accent : root.popupForeground
                         font.family: root.bar ? root.bar.fontFamily : Style.font.family
                         font.pixelSize: Style.font.caption
                         font.bold: root.readerLibraryTab === parent.modelData.key
@@ -1915,7 +2157,7 @@ Panel {
                     width: visible ? resumeLabel.implicitWidth + Style.space(18) : 0
                     height: Style.space(26)
                     radius: Style.cornerRadius
-                    color: resumeMouse.containsMouse ? Style.hoverFillFor(root.barForeground, Color.accent) : "transparent"
+                    color: resumeMouse.containsMouse ? Style.hoverFillFor(root.popupForeground, Color.accent) : "transparent"
                     border.width: 1
                     border.color: Color.accent
                     Text {
@@ -1987,14 +2229,14 @@ Panel {
                         height: Style.space(28)
                         hasCursor: root.readerLibraryFocus === "books" && root.readerBookCursor === index
                         current: root.readerCatalogBook === bookName
-                        foreground: root.barForeground
+                        foreground: root.popupForeground
                         accent: Color.accent
                         Text {
                           anchors.left: parent.left
                           anchors.leftMargin: Style.spacing.sm
                           anchors.verticalCenter: parent.verticalCenter
                           text: bookName
-                          color: root.readerLibraryFocus === "books" && root.readerBookCursor === index ? Color.accent : root.barForeground
+                          color: root.readerLibraryFocus === "books" && root.readerBookCursor === index ? Color.accent : root.popupForeground
                           font.family: root.bar ? root.bar.fontFamily : Style.font.family
                           font.pixelSize: Style.font.bodySmall
                         }
@@ -2028,7 +2270,7 @@ Panel {
                       spacing: Style.spacing.xs
                       Text {
                         text: root.readerCatalogBook + "  ·  " + root.readerCatalogChapterCount + " chapters"
-                        color: root.barForeground
+                        color: root.popupForeground
                         opacity: 0.64
                         font.family: root.bar ? root.bar.fontFamily : Style.font.family
                         font.pixelSize: Style.font.caption
@@ -2047,13 +2289,13 @@ Panel {
                           width: Style.space(36)
                           height: Style.space(30)
                           hasCursor: root.readerLibraryFocus === "chapters" && root.readerChapterCursor === index
-                          foreground: root.barForeground
+                          foreground: root.popupForeground
                           accent: Color.accent
                           bordered: true
                           Text {
                             anchors.centerIn: parent
                             text: chapterNumber
-                            color: parent.hasCursor ? Color.accent : root.barForeground
+                            color: parent.hasCursor ? Color.accent : root.popupForeground
                             font.family: root.bar ? root.bar.fontFamily : Style.font.family
                             font.pixelSize: Style.font.bodySmall
                           }
@@ -2093,7 +2335,7 @@ Panel {
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: "No books match “" + root.readerBookFilter + "”"
                         textFormat: Text.PlainText
-                        color: root.barForeground
+                        color: root.popupForeground
                         font.family: root.bar ? root.bar.fontFamily : Style.font.family
                         font.pixelSize: Style.font.body
                         font.bold: true
@@ -2102,7 +2344,7 @@ Panel {
                         anchors.horizontalCenter: parent.horizontalCenter
                         text: "Press Escape to clear the filter."
                         textFormat: Text.PlainText
-                        color: root.barForeground
+                        color: root.popupForeground
                         opacity: 0.5
                         font.family: root.bar ? root.bar.fontFamily : Style.font.family
                         font.pixelSize: Style.font.caption
@@ -2126,7 +2368,7 @@ Panel {
                       width: ListView.view.width
                       height: Style.space(48)
                       hasCursor: root.readerLibraryFocus === "list" && root.readerListCursor === index
-                      foreground: root.barForeground
+                      foreground: root.popupForeground
                       accent: Color.accent
                       bordered: true
                       Column {
@@ -2137,14 +2379,14 @@ Panel {
                         anchors.verticalCenter: parent.verticalCenter
                         Text {
                           text: reference
-                          color: root.barForeground
+                          color: root.popupForeground
                           font.family: root.bar ? root.bar.fontFamily : Style.font.family
                           font.pixelSize: Style.font.bodySmall
                           font.bold: true
                         }
                         Text {
                           text: chapterLabel + "  ·  page " + (pageIndex + 1)
-                          color: root.barForeground
+                          color: root.popupForeground
                           opacity: 0.48
                           font.family: root.bar ? root.bar.fontFamily : Style.font.family
                           font.pixelSize: Style.font.caption
@@ -2177,7 +2419,7 @@ Panel {
                         enabled: visible
                         iconText: "󰆴"
                         tooltipText: "Remove from Saved"
-                        foreground: root.barForeground
+                        foreground: root.popupForeground
                         hoverColor: Color.accent
                         fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                         onClicked: root.removeBookmarkAt(index)
@@ -2193,7 +2435,7 @@ Panel {
                     Text {
                       anchors.horizontalCenter: parent.horizontalCenter
                       text: root.readerLibraryTab === "saved" ? "No saved verses yet" : "No recent chapters yet"
-                      color: root.barForeground
+                      color: root.popupForeground
                       font.family: root.bar ? root.bar.fontFamily : Style.font.family
                       font.pixelSize: Style.font.body
                       font.bold: true
@@ -2203,7 +2445,7 @@ Panel {
                       text: root.readerLibraryTab === "saved"
                         ? "Focus a verse and choose Save."
                         : "Open a chapter to begin your history."
-                      color: root.barForeground
+                      color: root.popupForeground
                       opacity: 0.5
                       font.family: root.bar ? root.bar.fontFamily : Style.font.family
                       font.pixelSize: Style.font.caption
@@ -2220,7 +2462,7 @@ Panel {
                       : root.catalogLoaded
                         ? (root.readerLibraryTab === "saved" ? "↑↓ select  ·  ENTER open  ·  X remove" : "↑↓ select  ·  ENTER open  ·  TAB sections")
                         : "Loading the offline library…"
-                    color: root.readerActionFeedback !== "" ? Color.accent : root.barForeground
+                    color: root.readerActionFeedback !== "" ? Color.accent : root.popupForeground
                     opacity: root.readerActionFeedback !== "" ? 1 : 0.48
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.caption
@@ -2230,7 +2472,7 @@ Panel {
                   Item { width: Math.max(0, parent.width - Style.space(270)); height: 1 }
                   Text {
                     text: "REDUCED MOTION"
-                    color: root.reduceMotion ? Color.accent : root.barForeground
+                    color: root.reduceMotion ? Color.accent : root.popupForeground
                     opacity: root.reduceMotion ? 1 : 0.58
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.caption
@@ -2240,12 +2482,12 @@ Panel {
                     width: Style.space(34)
                     height: Style.space(18)
                     radius: height / 2
-                    color: root.reduceMotion ? Color.accent : Style.normalFillFor(root.barForeground, Color.accent)
+                    color: root.reduceMotion ? Color.accent : Style.normalFillFor(root.popupForeground, Color.accent)
                     Rectangle {
                       width: Style.space(14); height: width; radius: width / 2
                       y: Style.space(2)
                       x: root.reduceMotion ? parent.width - width - Style.space(2) : Style.space(2)
-                      color: root.reduceMotion ? Color.background : root.barForeground
+                      color: root.reduceMotion ? Color.popups.background : root.popupForeground
                     }
                     MouseArea {
                       id: reducedMotionMouse
@@ -2267,80 +2509,38 @@ Panel {
               id: readerMasthead
               visible: !root.readerLibraryOpen
               width: parent.width
-              height: Style.space(48)
+              height: Style.space(36)
 
               Column {
                 anchors.left: parent.left
+                anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(2)
 
                 Text {
+                  width: parent.width
                   text: root.readerChapterLabel
                   textFormat: Text.PlainText
-                  color: root.barForeground
+                  color: root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                  font.pixelSize: Style.font.title
+                  font.pixelSize: Style.font.heading
                   font.bold: true
+                  elide: Text.ElideRight
                 }
 
                 Text {
-                  text: root.readerLoading ? "PREPARING THE PAGE" : "WORLD ENGLISH BIBLE  ·  click a verse to focus"
+                  width: parent.width
+                  text: root.readerLoading
+                    ? "Opening chapter…"
+                    : root.narrationMode !== ""
+                      ? "Reading along"
+                      : "Click a verse to focus"
                   textFormat: Text.PlainText
-                  color: root.barForeground
-                  opacity: 0.48
+                  color: root.popupForeground
+                  opacity: 0.52
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
-                  font.letterSpacing: 0.8
                 }
-              }
-
-              Column {
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: Style.space(2)
-
-                Text {
-                  width: readerMasthead.width
-                  text: root.readerHasPages ? "PAGE " + (root.readerPageIndex + 1) : "PAGE —"
-                  textFormat: Text.PlainText
-                  color: Color.accent
-                  horizontalAlignment: Text.AlignRight
-                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                  font.pixelSize: Style.font.caption
-                  font.bold: true
-                  font.letterSpacing: 1
-                }
-
-                Text {
-                  width: readerMasthead.width
-                  text: root.narrationMode !== ""
-                    ? "READING ALONG"
-                    : root.readerHasPages ? root.readerPages.length + " PAGES" : ""
-                  textFormat: Text.PlainText
-                  color: root.narrationMode !== "" ? Color.accent : root.barForeground
-                  opacity: root.narrationMode !== "" ? 0.9 : 0.48
-                  horizontalAlignment: Text.AlignRight
-                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                  font.pixelSize: Style.font.caption
-                  font.bold: root.narrationMode !== ""
-                }
-              }
-
-              Rectangle {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.bottom: parent.bottom
-                height: 1
-                color: Color.popups.border
-                opacity: 0.5
-              }
-
-              Rectangle {
-                anchors.left: parent.left
-                anchors.bottom: parent.bottom
-                width: Style.space(34)
-                height: 2
-                color: Color.accent
               }
             }
 
@@ -2350,7 +2550,7 @@ Panel {
               width: parent.width
               height: Style.space(2)
               radius: height / 2
-              color: Style.normalFillFor(root.barForeground, Color.accent)
+              color: Style.normalFillFor(root.popupForeground, Color.accent)
 
               Rectangle {
                 id: readerPageProgress
@@ -2376,7 +2576,7 @@ Panel {
                 ? Style.space(230)
                 : Math.min(Style.space(410), Math.max(Style.space(260), readerPageColumn.implicitHeight + Style.space(42)))
               radius: Style.cornerRadius
-              color: Color.background
+              color: Color.popups.background
               borderSpec: Border.flat(Color.popups.border, 1)
               clip: true
 
@@ -2385,8 +2585,8 @@ Panel {
                 anchors.fill: parent
                 anchors.margins: Style.space(5)
                 z: 0
-                color: Style.normalFillFor(root.barForeground, Color.accent)
-                borderSpec: Border.flat(Style.normalBorderFor(root.barForeground, Color.accent), 1)
+                color: Style.normalFillFor(root.popupForeground, Color.accent)
+                borderSpec: Border.flat(Style.normalBorderFor(root.popupForeground, Color.accent), 1)
                 radius: Style.space(2)
               }
 
@@ -2394,24 +2594,8 @@ Panel {
                 id: readerPageBackdrop
                 anchors.fill: parent
                 z: 0
-                color: Style.hoverFillFor(root.barForeground, Color.accent)
+                color: Style.hoverFillFor(root.popupForeground, Color.accent)
                 opacity: root.readerTurning ? 0.12 : 0
-              }
-
-              Rectangle {
-                id: readerPageLift
-                x: readerPageContent.x + (root.readerTurning
-                  ? (root.readerTurnDirection > 0 ? Style.space(5) : -Style.space(5))
-                  : 0)
-                y: readerPageContent.y + Style.space(5)
-                width: readerPageContent.width
-                height: readerPageContent.height
-                z: 0
-                radius: Style.space(2)
-                color: root.barForeground
-                opacity: root.readerTurning
-                  ? 0.08 + (Math.sin(Math.PI * root.readerTurnProgress) * 0.09)
-                  : 0
               }
 
               Rectangle {
@@ -2419,23 +2603,135 @@ Panel {
                 x: root.readerTurnDirection > 0 ? 0 : parent.width - width
                 y: 0
                 z: 0
-                width: Style.space(8)
+                width: Style.space(4)
                 height: parent.height
-                color: root.barForeground
-                opacity: root.readerTurning
-                  ? 0.10 + (Math.sin(Math.PI * root.readerTurnProgress) * 0.25)
-                  : 0
+                color: root.popupForeground
+                opacity: root.readerTurning ? 0.06 * Math.sin(Math.PI * root.readerTurnProgress) : 0
               }
 
-              Rectangle {
-                anchors.left: parent.left
-                anchors.leftMargin: Style.space(8)
-                anchors.top: parent.top
-                anchors.bottom: parent.bottom
-                width: 1
-                z: 0
-                color: Color.accent
-                opacity: 0.22
+              // Keep the adjacent page laid out before a turn starts. The
+              // hidden text loaders warm font metrics, while this lightweight
+              // page sits behind the turning surface for a clean reveal.
+              Component {
+                id: readerNeighborWarmupComponent
+
+                Text {
+                  property var pageData: null
+                  anchors.fill: parent
+                  visible: true
+                  opacity: 0
+                  text: {
+                    if (!pageData || !pageData.verses) return ""
+                    var lines = []
+                    for (var i = 0; i < pageData.verses.length; i++) {
+                      lines.push(pageData.verses[i].reference + " " + pageData.verses[i].verse)
+                    }
+                    return lines.join("\n")
+                  }
+                  textFormat: Text.PlainText
+                  wrapMode: Text.WordWrap
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.body
+                }
+              }
+
+              Loader {
+                id: readerPreviousWarmup
+                x: -width - Style.space(12)
+                y: -height - Style.space(12)
+                width: readerPageSurface.width
+                height: readerPageSurface.height
+                active: root.readerMode && root.readerHasPages && root.readerPageIndex > 0
+                sourceComponent: readerNeighborWarmupComponent
+                property var pageData: root.readerPageIndex > 0
+                  ? root.readerPages[root.readerPageIndex - 1] : null
+                onLoaded: item.pageData = pageData
+                onPageDataChanged: if (item) item.pageData = pageData
+              }
+
+              Loader {
+                id: readerNextWarmup
+                x: -width - Style.space(12)
+                y: -height - Style.space(12)
+                width: readerPageSurface.width
+                height: readerPageSurface.height
+                active: root.readerMode && root.readerHasPages
+                  && root.readerPageIndex < root.readerPages.length - 1
+                sourceComponent: readerNeighborWarmupComponent
+                property var pageData: root.readerPageIndex < root.readerPages.length - 1
+                  ? root.readerPages[root.readerPageIndex + 1] : null
+                onLoaded: item.pageData = pageData
+                onPageDataChanged: if (item) item.pageData = pageData
+              }
+
+              Item {
+                id: readerIncomingPage
+                x: 0
+                y: readerPageContent.y
+                width: readerPageContent.width
+                height: Math.max(readerPageContent.height, incomingPageColumn.implicitHeight)
+                z: 1
+                visible: root.readerTurning && root.readerTurnPage !== null
+                opacity: visible ? Math.min(1, root.readerTurnProgress * 1.4) : 0
+                clip: true
+
+                BorderSurface {
+                  anchors.fill: parent
+                  radius: Style.space(2)
+                  color: Style.normalFillFor(root.popupForeground, Color.accent)
+                  borderSpec: Border.flat(Style.normalBorderFor(root.popupForeground, Color.accent), 1)
+                }
+
+                Column {
+                  id: incomingPageColumn
+                  x: Style.spacing.xs
+                  y: Style.spacing.xs
+                  width: parent.width - Style.spacing.xs * 2
+                  spacing: Style.spacing.sm
+
+                  Repeater {
+                    model: root.readerTurnPage ? root.readerTurnPage.verses : []
+
+                    delegate: Column {
+                      required property var modelData
+                      width: incomingPageColumn.width
+                      spacing: Style.spacing.xs
+
+                      Text {
+                        width: parent.width
+                        text: modelData.reference
+                        textFormat: Text.PlainText
+                        color: root.popupForeground
+                        opacity: 0.58
+                        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      Text {
+                        width: parent.width
+                        text: modelData.verse
+                        textFormat: Text.PlainText
+                        color: root.popupForeground
+                        opacity: 0.68
+                        font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                        font.pixelSize: Style.font.body
+                        wrapMode: Text.WordWrap
+                      }
+                    }
+                  }
+
+                  Text {
+                    width: parent.width
+                    text: root.readerTurnPage
+                      ? root.readerChapterLabel + "  ·  " + (root.readerTurnTargetPage + 1) : ""
+                    textFormat: Text.PlainText
+                    color: root.popupForeground
+                    opacity: 0.46
+                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                    font.pixelSize: Style.font.caption
+                    horizontalAlignment: Text.AlignRight
+                  }
+                }
               }
 
               Item {
@@ -2443,70 +2739,23 @@ Panel {
                 y: Style.spacing.md
                 width: parent.width - (Style.spacing.md * 2)
                 height: readerPageColumn.implicitHeight
-                z: 1
-                layer.enabled: true
-                layer.smooth: true
-
-                transform: Rotation {
-                  origin.x: root.readerTurnDirection > 0 ? 0 : readerPageContent.width
-                  origin.y: readerPageContent.height / 2
-                  axis.x: 0
-                  axis.y: 1
-                  axis.z: 0
-                  angle: root.readerTurnAngle
-                }
+                z: 2
+                opacity: root.readerTurning ? Math.max(0.2, 1 - root.readerTurnProgress) : 1
+                x: root.readerTurning
+                  ? (root.readerTurnDirection > 0 ? -1 : 1) * root.readerTurnProgress * Style.space(36)
+                  : 0
 
                 Column {
                   id: readerPageColumn
                   width: parent.width
                   spacing: Style.spacing.sm
 
-                  Row {
-                    width: parent.width
-                    visible: root.readerHasPages
-                    spacing: Style.spacing.xs
-
-                    Text {
-                      text: "WORLD ENGLISH BIBLE"
-                      textFormat: Text.PlainText
-                      color: root.barForeground
-                      opacity: 0.46
-                      font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                      font.pixelSize: Style.font.caption
-                      font.letterSpacing: 0.8
-                    }
-
-                    Item {
-                      width: Math.max(0, parent.width - readerFolioPage.implicitWidth - parent.children[0].implicitWidth - parent.spacing)
-                      height: 1
-                    }
-
-                    Text {
-                      id: readerFolioPage
-                      text: "FOLIO " + (root.readerPageIndex + 1)
-                      textFormat: Text.PlainText
-                      color: Color.accent
-                      opacity: 0.72
-                      font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                      font.pixelSize: Style.font.caption
-                      font.letterSpacing: 0.8
-                    }
-                  }
-
-                  Rectangle {
-                    width: parent.width
-                    visible: root.readerHasPages
-                    height: 1
-                    color: Color.popups.border
-                    opacity: 0.38
-                  }
-
                   Text {
                     width: parent.width
                     visible: root.readerLoading
                     text: "Opening this chapter…"
                     textFormat: Text.PlainText
-                    color: root.barForeground
+                    color: root.popupForeground
                     opacity: 0.62
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.body
@@ -2530,7 +2779,7 @@ Panel {
                         anchors.fill: parent
                         radius: Style.space(3)
                         color: parent.focused
-                          ? Style.focusFillFor(root.barForeground, Color.accent)
+                          ? Style.focusFillFor(root.popupForeground, Color.accent)
                           : "transparent"
                         borderSpec: parent.focused
                           ? Border.flat(Color.accent, 1)
@@ -2557,7 +2806,7 @@ Panel {
                           width: parent.width
                           text: modelData.reference
                           textFormat: Text.PlainText
-                          color: parent.parent.focused ? Color.accent : root.barForeground
+                          color: parent.parent.focused ? Color.accent : root.popupForeground
                           opacity: parent.parent.focused ? 1 : 0.58
                           font.family: root.bar ? root.bar.fontFamily : Style.font.family
                           font.pixelSize: Style.font.caption
@@ -2587,7 +2836,7 @@ Panel {
                                 anchors.centerIn: parent
                                 text: parent.modelData
                                 textFormat: Text.PlainText
-                                color: index === root.narrationWordIndex ? Color.background : root.barForeground
+                                color: index === root.narrationWordIndex ? Color.popups.background : root.popupForeground
                                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                                 font.pixelSize: Style.font.body
                                 font.bold: index === root.narrationWordIndex
@@ -2601,7 +2850,7 @@ Panel {
                           visible: !readerWordFlow.visible
                           text: modelData.verse
                           textFormat: Text.PlainText
-                          color: root.barForeground
+                          color: root.popupForeground
                           opacity: parent.parent.focused ? 1 : 0.68
                           font.family: root.bar ? root.bar.fontFamily : Style.font.family
                           font.pixelSize: Style.font.body
@@ -2643,7 +2892,7 @@ Panel {
                       anchors.verticalCenter: parent.verticalCenter
                       text: root.readerChapterLabel + "  ·  " + (root.readerPageIndex + 1)
                       textFormat: Text.PlainText
-                      color: root.barForeground
+                      color: root.popupForeground
                       opacity: 0.46
                       font.family: root.bar ? root.bar.fontFamily : Style.font.family
                       font.pixelSize: Style.font.caption
@@ -2653,21 +2902,74 @@ Panel {
               }
 
               Shape {
-                id: readerCornerFold
-                anchors.right: parent.right
+                id: readerBackCornerFold
+                anchors.left: parent.left
                 anchors.bottom: parent.bottom
-                width: Style.space(40)
-                height: Style.space(40)
+                width: Style.space(22)
+                height: Style.space(22)
                 z: 3
-                visible: root.readerHasPages && root.readerPageIndex < root.readerPages.length - 1
-                scale: readerCornerMouse.containsMouse ? 1.08 : 1
-                transformOrigin: Item.BottomRight
+                visible: root.canMoveReader(-1)
+                opacity: readerBackCornerMouse.containsMouse || (root.readerDragging && root.readerTurnDirection < 0) ? 1 : 0.35
                 preferredRendererType: Shape.CurveRenderer
 
                 ShapePath {
-                  fillColor: readerCornerMouse.containsMouse
-                    ? Style.hoverFillFor(root.barForeground, Color.accent)
-                    : Style.normalFillFor(root.barForeground, Color.accent)
+                  fillColor: Style.normalFillFor(root.popupForeground, Color.accent)
+                  strokeColor: Color.popups.border
+                  strokeWidth: 1
+                  startX: 0
+                  startY: 0
+                  PathLine { x: 0; y: readerBackCornerFold.height }
+                  PathLine { x: readerBackCornerFold.width; y: readerBackCornerFold.height }
+                  PathLine { x: 0; y: 0 }
+                }
+
+                Text {
+                  anchors.left: parent.left
+                  anchors.bottom: parent.bottom
+                  anchors.leftMargin: Style.space(4)
+                  anchors.bottomMargin: Style.space(2)
+                  text: "‹"
+                  textFormat: Text.PlainText
+                  color: root.popupForeground
+                  opacity: 0.7
+                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                  font.pixelSize: Style.font.caption
+                }
+
+                MouseArea {
+                  id: readerBackCornerMouse
+                  anchors.fill: parent
+                  enabled: root.canMoveReader(-1)
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onPressed: function(mouse) { root.beginReaderCornerDrag(-1, mouse.x) }
+                  onPositionChanged: function(mouse) { root.updateReaderCornerDrag(mouse.x) }
+                  onReleased: root.finishReaderCornerDrag()
+                  onClicked: {
+                    if (!root.readerDragWasActive) root.moveReaderPage(-1)
+                  }
+                }
+
+                PanelToolTip {
+                  visible: readerBackCornerMouse.containsMouse && !root.readerDragging
+                  text: "Drag to turn to the previous page"
+                  fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
+                }
+              }
+
+              Shape {
+                id: readerCornerFold
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                width: Style.space(22)
+                height: Style.space(22)
+                z: 3
+                visible: root.canMoveReader(1)
+                opacity: readerCornerMouse.containsMouse || (root.readerDragging && root.readerTurnDirection > 0) ? 1 : 0.35
+                preferredRendererType: Shape.CurveRenderer
+
+                ShapePath {
+                  fillColor: Style.normalFillFor(root.popupForeground, Color.accent)
                   strokeColor: Color.popups.border
                   strokeWidth: 1
                   startX: readerCornerFold.width
@@ -2680,47 +2982,55 @@ Panel {
                 Text {
                   anchors.right: parent.right
                   anchors.bottom: parent.bottom
-                  anchors.rightMargin: Style.space(6)
-                  anchors.bottomMargin: Style.space(4)
+                  anchors.rightMargin: Style.space(4)
+                  anchors.bottomMargin: Style.space(2)
                   text: "›"
                   textFormat: Text.PlainText
-                  color: Color.accent
-                  opacity: readerCornerMouse.containsMouse ? 1 : 0.68
+                  color: root.popupForeground
+                  opacity: 0.7
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                  font.pixelSize: Style.font.body
-                  font.bold: true
-                }
-
-                Behavior on scale {
-                  enabled: !root.reduceMotion
-                  NumberAnimation { duration: 140; easing.type: Easing.OutBack }
+                  font.pixelSize: Style.font.caption
                 }
 
                 MouseArea {
                   id: readerCornerMouse
                   anchors.fill: parent
-                  enabled: root.readerHasPages && root.readerPageIndex < root.readerPages.length - 1
+                  enabled: root.canMoveReader(1)
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.moveReaderPage(1)
+                  onPressed: function(mouse) { root.beginReaderCornerDrag(1, mouse.x) }
+                  onPositionChanged: function(mouse) { root.updateReaderCornerDrag(mouse.x) }
+                  onReleased: root.finishReaderCornerDrag()
+                  onClicked: {
+                    if (!root.readerDragWasActive) root.moveReaderPage(1)
+                  }
+                }
+
+                PanelToolTip {
+                  visible: readerCornerMouse.containsMouse && !root.readerDragging
+                  text: "Drag to turn to the next page"
+                  fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                 }
               }
             }
 
             Row {
+              id: readerNavRow
               visible: !root.readerLibraryOpen
               width: parent.width
               spacing: Style.spacing.xs
+              readonly property int actionCount: 5 + (root.narrationActive ? 1 : 0)
+              readonly property real actionWidth: (width - spacing * (actionCount - 1)) / actionCount
 
               Rectangle {
                 id: readerPreviousButton
-                enabled: root.readerPageIndex > 0 && root.readerHasPages
-                width: readerPreviousLabel.implicitWidth + Style.space(20)
+                enabled: root.canMoveReader(-1)
+                width: readerNavRow.actionWidth
                 height: Style.space(28)
                 radius: Style.cornerRadius
                 opacity: enabled ? 1 : 0.36
                 color: readerPreviousMouse.containsMouse
-                  ? Style.hoverFillFor(root.barForeground, Color.accent)
+                  ? Style.hoverFillFor(root.popupForeground, Color.accent)
                   : "transparent"
                 border.width: 1
                 border.color: Color.popups.border
@@ -2728,12 +3038,11 @@ Panel {
                 Text {
                   id: readerPreviousLabel
                   anchors.centerIn: parent
-                  text: "‹ PAGE"
+                  text: "Prev"
                   textFormat: Text.PlainText
-                  color: root.barForeground
+                  color: root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
-                  font.letterSpacing: 0.5
                 }
 
                 MouseArea {
@@ -2748,13 +3057,13 @@ Panel {
 
               Rectangle {
                 id: readerNextButton
-                enabled: root.readerPageIndex < root.readerPages.length - 1 && root.readerHasPages
-                width: readerNextLabel.implicitWidth + Style.space(20)
+                enabled: root.canMoveReader(1)
+                width: readerNavRow.actionWidth
                 height: Style.space(28)
                 radius: Style.cornerRadius
                 opacity: enabled ? 1 : 0.36
                 color: readerNextMouse.containsMouse
-                  ? Style.hoverFillFor(root.barForeground, Color.accent)
+                  ? Style.hoverFillFor(root.popupForeground, Color.accent)
                   : "transparent"
                 border.width: 1
                 border.color: Color.popups.border
@@ -2762,12 +3071,11 @@ Panel {
                 Text {
                   id: readerNextLabel
                   anchors.centerIn: parent
-                  text: "PAGE ›"
+                  text: "Next"
                   textFormat: Text.PlainText
-                  color: root.barForeground
+                  color: root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
-                  font.letterSpacing: 0.5
                 }
 
                 MouseArea {
@@ -2780,20 +3088,15 @@ Panel {
                 }
               }
 
-              Item {
-                width: Math.max(0, parent.width - readerPreviousButton.width - readerNextButton.width - readerReadVerseButton.width - readerReadChapterButton.width - readerBookmarkButton.width - readerStopButton.width - (parent.spacing * 5))
-                height: 1
-              }
-
               Rectangle {
                 id: readerReadVerseButton
                 enabled: root.readerHasPages
-                width: readerReadVerseLabel.implicitWidth + Style.space(18)
+                width: readerNavRow.actionWidth
                 height: Style.space(28)
                 radius: Style.cornerRadius
                 opacity: enabled ? 1 : 0.36
                 color: readerReadVerseMouse.containsMouse
-                  ? Style.hoverFillFor(root.barForeground, Color.accent)
+                  ? Style.hoverFillFor(root.popupForeground, Color.accent)
                   : "transparent"
                 border.width: 1
                 border.color: Color.popups.border
@@ -2801,12 +3104,11 @@ Panel {
                 Text {
                   id: readerReadVerseLabel
                   anchors.centerIn: parent
-                  text: "READ VERSE"
+                  text: "Read"
                   textFormat: Text.PlainText
-                  color: root.barForeground
+                  color: root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
-                  font.letterSpacing: 0.4
                 }
 
                 MouseArea {
@@ -2822,12 +3124,12 @@ Panel {
               Rectangle {
                 id: readerReadChapterButton
                 enabled: root.readerHasPages
-                width: readerReadChapterLabel.implicitWidth + Style.space(18)
+                width: readerNavRow.actionWidth
                 height: Style.space(28)
                 radius: Style.cornerRadius
                 opacity: enabled ? 1 : 0.36
                 color: readerReadChapterMouse.containsMouse
-                  ? Style.hoverFillFor(root.barForeground, Color.accent)
+                  ? Style.hoverFillFor(root.popupForeground, Color.accent)
                   : "transparent"
                 border.width: 1
                 border.color: Color.popups.border
@@ -2835,12 +3137,11 @@ Panel {
                 Text {
                   id: readerReadChapterLabel
                   anchors.centerIn: parent
-                  text: root.readerSelectedVerseIndex > 0 ? "READ FROM HERE" : "READ CHAPTER"
+                  text: root.readerSelectedVerseIndex > 0 ? "From here" : "Chapter"
                   textFormat: Text.PlainText
-                  color: root.barForeground
+                  color: root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
-                  font.letterSpacing: 0.4
                 }
 
                 MouseArea {
@@ -2856,22 +3157,21 @@ Panel {
               Rectangle {
                 id: readerBookmarkButton
                 enabled: root.readerHasPages
-                width: readerBookmarkLabel.implicitWidth + Style.space(18)
+                width: readerNavRow.actionWidth
                 height: Style.space(28)
                 radius: Style.cornerRadius
                 opacity: enabled ? 1 : 0.36
                 color: readerBookmarkMouse.containsMouse
-                  ? Style.hoverFillFor(root.barForeground, Color.accent) : "transparent"
+                  ? Style.hoverFillFor(root.popupForeground, Color.accent) : "transparent"
                 border.width: 1
                 border.color: root.currentReaderBookmarkIndex() >= 0 ? Color.accent : Color.popups.border
                 Text {
                   id: readerBookmarkLabel
                   anchors.centerIn: parent
-                  text: root.currentReaderBookmarkIndex() >= 0 ? "SAVED" : "SAVE"
-                  color: root.currentReaderBookmarkIndex() >= 0 ? Color.accent : root.barForeground
+                  text: root.currentReaderBookmarkIndex() >= 0 ? "Saved" : "Save"
+                  color: root.currentReaderBookmarkIndex() >= 0 ? Color.accent : root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
-                  font.letterSpacing: 0.4
                 }
                 MouseArea {
                   id: readerBookmarkMouse
@@ -2891,11 +3191,11 @@ Panel {
               Rectangle {
                 id: readerStopButton
                 visible: root.narrationActive
-                width: visible ? readerStopLabel.implicitWidth + Style.space(18) : 0
+                width: visible ? readerNavRow.actionWidth : 0
                 height: Style.space(28)
                 radius: Style.cornerRadius
                 color: readerStopMouse.containsMouse
-                  ? Style.hoverFillFor(root.barForeground, Color.accent)
+                  ? Style.hoverFillFor(root.popupForeground, Color.accent)
                   : "transparent"
                 border.width: 1
                 border.color: Color.popups.border
@@ -2903,12 +3203,11 @@ Panel {
                 Text {
                   id: readerStopLabel
                   anchors.centerIn: parent
-                  text: "STOP"
+                  text: "Stop"
                   textFormat: Text.PlainText
-                  color: root.barForeground
+                  color: root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
-                  font.letterSpacing: 0.4
                 }
 
                 MouseArea {
@@ -2925,10 +3224,23 @@ Panel {
               visible: !root.readerLibraryOpen
               width: parent.width
               text: root.narrationMode !== ""
-                ? "Reading follows the page · close the panel to keep listening"
-                : "Click a verse to focus it, then read it aloud."
+                ? "← → turn into the next chapter  ·  Space pause"
+                : "← → continues into the next chapter  ·  Enter read  ·  S save"
               textFormat: Text.PlainText
-              color: root.barForeground
+              id: readerKeyboardHint
+              color: root.popupForeground
+              opacity: 0.44
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: root.readerLibraryOpen
+              width: parent.width
+              text: "↑↓ select · Enter open · Tab switches sections · B closes Library"
+              textFormat: Text.PlainText
+              color: root.popupForeground
               opacity: 0.44
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
@@ -2955,7 +3267,7 @@ Panel {
           visible: root.ttsChecked && !root.ttsAvailable
           height: visible ? voiceSetupRow.implicitHeight + Style.spacing.sm * 2 : 0
           radius: Style.cornerRadius
-          color: Style.normalFillFor(root.barForeground, Color.accent)
+          color: Style.normalFillFor(root.popupForeground, Color.accent)
           borderSpec: Border.flat(Color.popups.border, 1)
 
           Row {
@@ -2974,7 +3286,7 @@ Panel {
                 width: parent.width
                 text: "Reading aloud needs a local voice"
                 textFormat: Text.PlainText
-                color: root.barForeground
+                color: root.popupForeground
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.bodySmall
                 font.bold: true
@@ -2983,7 +3295,7 @@ Panel {
                 width: parent.width
                 text: "Install espeak-ng once; Bible text and speech remain offline."
                 textFormat: Text.PlainText
-                color: root.barForeground
+                color: root.popupForeground
                 opacity: 0.52
                 elide: Text.ElideRight
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -2996,7 +3308,7 @@ Panel {
               width: voiceInstallLabel.implicitWidth + Style.space(18)
               height: Style.space(28)
               radius: Style.cornerRadius
-              color: voiceInstallMouse.containsMouse ? Style.hoverFillFor(root.barForeground, Color.accent) : "transparent"
+              color: voiceInstallMouse.containsMouse ? Style.hoverFillFor(root.popupForeground, Color.accent) : "transparent"
               border.width: 1
               border.color: Color.accent
               Text {
@@ -3027,14 +3339,14 @@ Panel {
               width: voiceCheckLabel.implicitWidth + Style.space(18)
               height: Style.space(28)
               radius: Style.cornerRadius
-              color: voiceCheckMouse.containsMouse ? Style.hoverFillFor(root.barForeground, Color.accent) : "transparent"
+              color: voiceCheckMouse.containsMouse ? Style.hoverFillFor(root.popupForeground, Color.accent) : "transparent"
               border.width: 1
               border.color: Color.popups.border
               Text {
                 id: voiceCheckLabel
                 anchors.centerIn: parent
                 text: "CHECK AGAIN"
-                color: root.barForeground
+                color: root.popupForeground
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.caption
               }
@@ -3054,10 +3366,10 @@ Panel {
           width: parent.width
           visible: !root.readerMode
           height: visible ? implicitHeight : 0
-          placeholderText: "Search a word, phrase, or reference…"
-          foreground: root.barForeground
+          placeholderText: "Word, phrase, or John 3:16"
+          foreground: root.popupForeground
           accent: Color.accent
-          rightPadding: Style.space(54)
+          rightPadding: Style.space(56)
           text: root.query
           onTextChanged: {
             if (root.query !== text) root.query = text
@@ -3079,7 +3391,7 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             text: "ENTER"
             textFormat: Text.PlainText
-            color: root.barForeground
+            color: root.popupForeground
             opacity: 0.48
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
@@ -3087,30 +3399,43 @@ Panel {
           }
         }
 
-        Row {
+        Flow {
           id: quickSearches
           width: parent.width
-          visible: !root.readerMode && root.query.trim() === ""
+          visible: !root.readerMode && root.query.trim() === "" && !root.dailyView
           height: visible ? implicitHeight : 0
           spacing: Style.spacing.xs
 
-          PanelActionButton {
+          Rectangle {
             id: dailySuggestion
-            size: Style.space(52)
-            implicitHeight: Style.space(28)
-            height: implicitHeight
-            iconText: dailyProc.running ? "…" : "Daily"
-            tooltipText: "One verse per day · no repeats until the whole Bible cycles"
-            foreground: Color.accent
-            hoverColor: Color.accent
-            fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-            fontSize: Style.font.bodySmall
-            bordered: true
-            focusable: true
-            enabled: !dailyProc.running
-            onClicked: root.showDailyVerse()
-            Accessible.name: "Show today’s verse"
-            Accessible.role: Accessible.Button
+            width: dailyChipLabel.implicitWidth + Style.space(20)
+            height: Style.space(28)
+            radius: height / 2
+            color: dailyChipMouse.containsMouse
+              ? Style.hoverFillFor(root.popupForeground, Color.accent)
+              : "transparent"
+            border.width: 1
+            border.color: Color.accent
+            opacity: dailyProc.running ? 0.6 : 1
+
+            Text {
+              id: dailyChipLabel
+              anchors.centerIn: parent
+              text: dailyProc.running ? "…" : "Daily"
+              textFormat: Text.PlainText
+              color: Color.accent
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            MouseArea {
+              id: dailyChipMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              enabled: !dailyProc.running
+              onClicked: root.showDailyVerse()
+            }
           }
 
           Repeater {
@@ -3122,19 +3447,17 @@ Panel {
               height: Style.space(28)
               radius: height / 2
               color: chipMouse.containsMouse
-                ? Style.hoverFillFor(root.barForeground, Color.accent)
+                ? Style.hoverFillFor(root.popupForeground, Color.accent)
                 : "transparent"
               border.width: 1
               border.color: Color.popups.border
-              Accessible.name: "Search for " + modelData
-              Accessible.role: Accessible.Button
 
               Text {
                 id: chipLabel
                 anchors.centerIn: parent
                 text: parent.modelData
                 textFormat: Text.PlainText
-                color: root.barForeground
+                color: root.popupForeground
                 opacity: 0.8
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.bodySmall
@@ -3161,46 +3484,25 @@ Panel {
           height: visible ? implicitHeight : 0
           text: "Search a word, phrase, or reference. Click a verse to copy it."
           textFormat: Text.PlainText
-          color: root.barForeground
+          color: root.popupForeground
           opacity: 0.58
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.bodySmall
           wrapMode: Text.WordWrap
         }
 
-        Row {
-          id: statusRow
+        Text {
+          id: statusLabel
           width: parent.width
           visible: !root.readerMode && (root.query.trim() !== "" || root.dailyView)
           height: visible ? implicitHeight : 0
-          spacing: Style.spacing.sm
-
-          Text {
-            id: statusLabel
-            width: Math.min(Style.space(260), implicitWidth)
-            text: root.copyFeedback !== "" ? root.copyFeedback : root.statusText
-            textFormat: Text.PlainText
-            color: root.copyFailed ? Color.urgent : root.copyFeedback !== "" ? Color.accent : root.barForeground
-            opacity: 0.64
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.bodySmall
-            elide: Text.ElideRight
-          }
-
-          Item {
-            width: Math.max(0, parent.width - statusLabel.width - keyboardHint.implicitWidth - Style.spacing.sm)
-            height: 1
-          }
-
-          Text {
-            id: keyboardHint
-            text: resultModel.count > 0 ? "↑↓ navigate · ENTER copy · R read · SPACE pause" : ""
-            textFormat: Text.PlainText
-            color: root.barForeground
-            opacity: 0.46
-            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-            font.pixelSize: Style.font.caption
-          }
+          text: root.copyFeedback !== "" ? root.copyFeedback : root.statusText
+          textFormat: Text.PlainText
+          color: root.copyFailed ? Color.urgent : root.copyFeedback !== "" ? Color.accent : root.popupForeground
+          opacity: 0.64
+          font.family: root.bar ? root.bar.fontFamily : Style.font.family
+          font.pixelSize: Style.font.bodySmall
+          wrapMode: Text.WordWrap
         }
 
         Row {
@@ -3209,14 +3511,18 @@ Panel {
           visible: !root.readerMode && (root.query.trim() !== "" || root.dailyView) && resultModel.count > 0
           height: visible ? implicitHeight : 0
           spacing: Style.spacing.xs
+          readonly property int actionCount: 3 + (root.narrationActive ? 1 : 0)
+          readonly property real actionWidth: actionCount > 0
+            ? (width - spacing * (actionCount - 1)) / actionCount
+            : width
 
           Rectangle {
             id: readVerseButton
-            width: readVerseLabel.implicitWidth + Style.space(24)
-            height: Style.space(30)
+            width: narrationActions.actionWidth
+            height: Style.space(32)
             radius: Style.cornerRadius
             color: readVerseMouse.containsMouse
-              ? Style.hoverFillFor(root.barForeground, Color.accent)
+              ? Style.hoverFillFor(root.popupForeground, Color.accent)
               : "transparent"
             border.width: 1
             border.color: Color.popups.border
@@ -3224,11 +3530,14 @@ Panel {
             Text {
               id: readVerseLabel
               anchors.centerIn: parent
+              width: parent.width - Style.space(8)
+              horizontalAlignment: Text.AlignHCenter
+              elide: Text.ElideRight
               text: root.selectedIndex === 0 && topSpeechProc.running ? "Preparing…"
-                : root.selectedIndex === 0 && root.topSpeechReady ? "Ready · Read"
-                : "Read aloud"
+                : root.selectedIndex === 0 && root.topSpeechReady ? "Read"
+                : "Read"
               textFormat: Text.PlainText
-              color: root.barForeground
+              color: root.popupForeground
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.bodySmall
             }
@@ -3239,18 +3548,16 @@ Panel {
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
               onClicked: root.readVerse(root.selectedIndex)
-              Accessible.name: readVerseLabel.text
-              Accessible.role: Accessible.Button
             }
           }
 
           Rectangle {
             id: openBookButton
-            width: openBookLabel.implicitWidth + Style.space(24)
-            height: Style.space(30)
+            width: narrationActions.actionWidth
+            height: Style.space(32)
             radius: Style.cornerRadius
             color: openBookMouse.containsMouse
-              ? Style.hoverFillFor(root.barForeground, Color.accent)
+              ? Style.hoverFillFor(root.popupForeground, Color.accent)
               : "transparent"
             border.width: 1
             border.color: Color.popups.border
@@ -3258,9 +3565,12 @@ Panel {
             Text {
               id: openBookLabel
               anchors.centerIn: parent
+              width: parent.width - Style.space(8)
+              horizontalAlignment: Text.AlignHCenter
+              elide: Text.ElideRight
               text: "Open book"
               textFormat: Text.PlainText
-              color: root.barForeground
+              color: root.popupForeground
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.bodySmall
             }
@@ -3276,11 +3586,11 @@ Panel {
 
           Rectangle {
             id: readChapterButton
-            width: readChapterLabel.implicitWidth + Style.space(24)
-            height: Style.space(30)
+            width: narrationActions.actionWidth
+            height: Style.space(32)
             radius: Style.cornerRadius
             color: readChapterMouse.containsMouse
-              ? Style.hoverFillFor(root.barForeground, Color.accent)
+              ? Style.hoverFillFor(root.popupForeground, Color.accent)
               : "transparent"
             border.width: 1
             border.color: Color.popups.border
@@ -3288,9 +3598,12 @@ Panel {
             Text {
               id: readChapterLabel
               anchors.centerIn: parent
+              width: parent.width - Style.space(8)
+              horizontalAlignment: Text.AlignHCenter
+              elide: Text.ElideRight
               text: "Read chapter"
               textFormat: Text.PlainText
-              color: root.barForeground
+              color: root.popupForeground
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.bodySmall
             }
@@ -3307,11 +3620,11 @@ Panel {
           Rectangle {
             id: stopNarrationButton
             visible: root.narrationActive
-            width: visible ? stopNarrationLabel.implicitWidth + Style.space(24) : 0
-            height: Style.space(30)
+            width: visible ? narrationActions.actionWidth : 0
+            height: Style.space(32)
             radius: Style.cornerRadius
             color: stopNarrationMouse.containsMouse
-              ? Style.hoverFillFor(root.barForeground, Color.accent)
+              ? Style.hoverFillFor(root.popupForeground, Color.accent)
               : "transparent"
             border.width: 1
             border.color: Color.popups.border
@@ -3321,7 +3634,7 @@ Panel {
               anchors.centerIn: parent
               text: "Stop"
               textFormat: Text.PlainText
-              color: root.barForeground
+              color: root.popupForeground
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.bodySmall
             }
@@ -3343,7 +3656,7 @@ Panel {
           height: visible ? implicitHeight : 0
           text: root.narrationStatus
           textFormat: Text.PlainText
-          color: root.ttsAvailable ? root.barForeground : Color.urgent
+          color: root.ttsAvailable ? root.popupForeground : Color.urgent
           opacity: 0.64
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
           font.pixelSize: Style.font.bodySmall
@@ -3359,7 +3672,7 @@ Panel {
           BorderSurface {
             anchors.fill: parent
             radius: Style.cornerRadius
-            color: Style.hoverFillFor(root.barForeground, Color.accent)
+            color: Style.hoverFillFor(root.popupForeground, Color.accent)
             borderSpec: Border.flat(Color.accent, 1)
           }
 
@@ -3377,7 +3690,7 @@ Panel {
               Text {
                 text: "Read along"
                 textFormat: Text.PlainText
-                color: root.barForeground
+                color: root.popupForeground
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.bodySmall
                 font.bold: true
@@ -3392,7 +3705,7 @@ Panel {
                 id: readAlongState
                 text: root.narrationStatus
                 textFormat: Text.PlainText
-                color: root.barForeground
+                color: root.popupForeground
                 opacity: 0.66
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.caption
@@ -3404,7 +3717,7 @@ Panel {
               width: parent.width
               height: Style.space(3)
               radius: height / 2
-              color: Style.hoverFillFor(root.barForeground, Color.accent)
+              color: Style.hoverFillFor(root.popupForeground, Color.accent)
 
               Rectangle {
                 width: parent.width * root.narrationProgress
@@ -3421,7 +3734,7 @@ Panel {
                 ? ""
                 : root.narrationRowAt(-1).reference + "  " + root.narrationRowAt(-1).verse
               textFormat: Text.PlainText
-              color: root.barForeground
+              color: root.popupForeground
               opacity: 0.38
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
@@ -3463,8 +3776,8 @@ Panel {
                     text: parent.modelData
                     textFormat: Text.PlainText
                     color: index === root.narrationWordIndex && root.narrationMode !== ""
-                      ? Color.background
-                      : root.barForeground
+                      ? Color.popups.background
+                      : root.popupForeground
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.body
                     font.bold: index === root.narrationWordIndex && root.narrationMode !== ""
@@ -3480,7 +3793,7 @@ Panel {
                 ? ""
                 : root.narrationRowAt(1).reference + "  " + root.narrationRowAt(1).verse
               textFormat: Text.PlainText
-              color: root.barForeground
+              color: root.popupForeground
               opacity: 0.38
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
@@ -3499,7 +3812,7 @@ Panel {
                 radius: Style.cornerRadius
                 opacity: enabled ? 1 : 0.36
                 color: previousReadMouse.containsMouse
-                  ? Style.hoverFillFor(root.barForeground, Color.accent)
+                  ? Style.hoverFillFor(root.popupForeground, Color.accent)
                   : "transparent"
                 border.width: 1
                 border.color: Color.popups.border
@@ -3509,7 +3822,7 @@ Panel {
                   anchors.centerIn: parent
                   text: "PREV"
                   textFormat: Text.PlainText
-                  color: root.barForeground
+                  color: root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
                   font.letterSpacing: 0.6
@@ -3533,7 +3846,7 @@ Panel {
                 radius: Style.cornerRadius
                 opacity: enabled ? 1 : 0.36
                 color: nextReadMouse.containsMouse
-                  ? Style.hoverFillFor(root.barForeground, Color.accent)
+                  ? Style.hoverFillFor(root.popupForeground, Color.accent)
                   : "transparent"
                 border.width: 1
                 border.color: Color.popups.border
@@ -3543,7 +3856,7 @@ Panel {
                   anchors.centerIn: parent
                   text: "NEXT"
                   textFormat: Text.PlainText
-                  color: root.barForeground
+                  color: root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
                   font.letterSpacing: 0.6
@@ -3571,7 +3884,7 @@ Panel {
                 height: Style.space(26)
                 radius: Style.cornerRadius
                 color: stopReadMouse.containsMouse
-                  ? Style.hoverFillFor(root.barForeground, Color.accent)
+                  ? Style.hoverFillFor(root.popupForeground, Color.accent)
                   : "transparent"
                 border.width: 1
                 border.color: Color.popups.border
@@ -3581,7 +3894,7 @@ Panel {
                   anchors.centerIn: parent
                   text: "STOP"
                   textFormat: Text.PlainText
-                  color: root.barForeground
+                  color: root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
                   font.letterSpacing: 0.6
@@ -3601,7 +3914,7 @@ Panel {
               width: parent.width
               text: "Word timing is estimated for local speech."
               textFormat: Text.PlainText
-              color: root.barForeground
+              color: root.popupForeground
               opacity: 0.42
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
@@ -3637,7 +3950,7 @@ Panel {
                   : root.statusText.indexOf("Could not") === 0 || root.statusText.indexOf("unavailable") >= 0
                     ? root.statusText : "No matching verses"
                 textFormat: Text.PlainText
-                color: root.barForeground
+                color: root.popupForeground
                 opacity: 0.62
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.body
@@ -3659,86 +3972,131 @@ Panel {
 
                   width: resultColumn.width
                   visible: !(index === 0 && root.readAlongDuplicatesTop)
-                  height: visible ? Math.max(Style.space(82), verseText.implicitHeight + Style.space(40)) : 0
+                  height: visible ? resultCardContent.implicitHeight + Style.spacing.sm * 2 : 0
 
                   BorderSurface {
                     anchors.fill: parent
                     radius: Style.cornerRadius
                     color: root.selectedIndex === index
-                      ? Style.hoverFillFor(root.barForeground, Color.accent)
+                      ? Style.hoverFillFor(root.popupForeground, Color.accent)
                       : "transparent"
                     borderSpec: root.selectedIndex === index
-                      ? Border.controlSpec("hover-cursor", root.barForeground, Color.accent)
+                      ? Border.controlSpec("hover-cursor", root.popupForeground, Color.accent)
                       : Border.flat(Color.popups.border, 1)
+                  }
+
+                  MouseArea {
+                    id: resultCopyMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onEntered: root.selectedIndex = index
+                    onClicked: root.copyResult(index)
                   }
 
                   Column {
                     id: resultCardContent
-                    z: 2
-                    anchors.fill: parent
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
                     anchors.margins: Style.spacing.sm
                     spacing: Style.spacing.xs
 
-                    Row {
+                    Item {
                       width: parent.width
-                      spacing: Style.spacing.xs
+                      height: Math.max(referenceLabel.implicitHeight, cardActions.height)
 
                       Text {
                         id: referenceLabel
+                        anchors.left: parent.left
+                        anchors.right: cardActions.left
+                        anchors.rightMargin: Style.spacing.sm
+                        anchors.verticalCenter: parent.verticalCenter
                         text: reference
                         textFormat: Text.PlainText
-                        color: root.barForeground
+                        color: root.popupForeground
                         font.family: root.bar ? root.bar.fontFamily : Style.font.family
                         font.pixelSize: Style.font.bodySmall
                         font.bold: true
+                        elide: Text.ElideRight
                       }
 
-                      Item {
-                        width: Math.max(0, parent.width - referenceLabel.implicitWidth - readButton.width - copyHint.implicitWidth - (parent.spacing * 2))
-                        height: 1
-                      }
+                      Row {
+                        id: cardActions
+                        z: 4
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Style.spacing.xs
+                        readonly property real chipWidth: Style.space(52)
+                        readonly property real chipHeight: Style.space(24)
 
-                      Rectangle {
-                        id: readButton
-                        z: 2
-                        width: Style.space(44)
-                        height: Style.space(22)
-                        radius: Style.cornerRadius
-                        color: readMouse.containsMouse
-                          ? Style.hoverFillFor(root.barForeground, Color.accent)
-                          : "transparent"
-                        border.width: 1
-                        border.color: Color.popups.border
+                        Rectangle {
+                          id: readButton
+                          width: cardActions.chipWidth
+                          height: cardActions.chipHeight
+                          radius: Style.cornerRadius
+                          color: readMouse.containsMouse
+                            ? Style.hoverFillFor(root.popupForeground, Color.accent)
+                            : Style.normalFillFor(root.popupForeground, Color.accent)
+                          border.width: 1
+                          border.color: Color.popups.border
 
-                        Text {
-                          anchors.centerIn: parent
-                          text: "READ"
-                          textFormat: Text.PlainText
-                          color: root.barForeground
-                          opacity: 0.74
-                          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                          font.pixelSize: Style.font.caption
-                          font.letterSpacing: 0.6
+                          Text {
+                            id: readChipLabel
+                            anchors.centerIn: parent
+                            text: "Read"
+                            textFormat: Text.PlainText
+                            color: root.popupForeground
+                            opacity: 0.78
+                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                            font.pixelSize: Style.font.caption
+                          }
+
+                          MouseArea {
+                            id: readMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.selectedIndex = index
+                              root.readVerse(index)
+                            }
+                          }
                         }
 
-                        MouseArea {
-                          id: readMouse
-                          anchors.fill: parent
-                          hoverEnabled: true
-                          cursorShape: Qt.PointingHandCursor
-                          onClicked: root.readVerse(index)
-                        }
-                      }
+                        Rectangle {
+                          id: copyButton
+                          width: cardActions.chipWidth
+                          height: cardActions.chipHeight
+                          radius: Style.cornerRadius
+                          color: copyChipMouse.containsMouse
+                            ? Style.hoverFillFor(root.popupForeground, Color.accent)
+                            : Style.normalFillFor(root.popupForeground, Color.accent)
+                          border.width: 1
+                          border.color: Color.popups.border
 
-                      Text {
-                        id: copyHint
-                        text: "COPY"
-                        textFormat: Text.PlainText
-                        color: root.barForeground
-                        opacity: 0.46
-                        font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                        font.pixelSize: Style.font.caption
-                        font.letterSpacing: 0.8
+                          Text {
+                            id: copyChipLabel
+                            anchors.centerIn: parent
+                            text: "Copy"
+                            textFormat: Text.PlainText
+                            color: root.popupForeground
+                            opacity: 0.78
+                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                            font.pixelSize: Style.font.caption
+                          }
+
+                          MouseArea {
+                            id: copyChipMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                              root.selectedIndex = index
+                              root.copyResult(index)
+                            }
+                          }
+                        }
                       }
                     }
 
@@ -3747,21 +4105,13 @@ Panel {
                       width: parent.width
                       text: verse
                       textFormat: Text.PlainText
-                      color: root.barForeground
+                      color: root.popupForeground
                       font.family: root.bar ? root.bar.fontFamily : Style.font.family
                       font.pixelSize: Style.font.body
                       wrapMode: Text.WordWrap
+                      lineHeight: 1.28
+                      lineHeightMode: Text.ProportionalHeight
                     }
-                  }
-
-                  MouseArea {
-                    id: resultCopyMouse
-                    z: 1
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onEntered: root.selectedIndex = index
-                    onClicked: root.copyResult(index)
                   }
                 }
               }
