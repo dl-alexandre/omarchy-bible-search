@@ -2609,61 +2609,6 @@ Panel {
                 opacity: root.readerTurning ? 0.06 * Math.sin(Math.PI * root.readerTurnProgress) : 0
               }
 
-              // Keep the adjacent page laid out before a turn starts. The
-              // hidden text loaders warm font metrics, while this lightweight
-              // page sits behind the turning surface for a clean reveal.
-              Component {
-                id: readerNeighborWarmupComponent
-
-                Text {
-                  property var pageData: null
-                  anchors.fill: parent
-                  visible: true
-                  opacity: 0
-                  text: {
-                    if (!pageData || !pageData.verses) return ""
-                    var lines = []
-                    for (var i = 0; i < pageData.verses.length; i++) {
-                      lines.push(pageData.verses[i].reference + " " + pageData.verses[i].verse)
-                    }
-                    return lines.join("\n")
-                  }
-                  textFormat: Text.PlainText
-                  wrapMode: Text.WordWrap
-                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                  font.pixelSize: Style.font.body
-                }
-              }
-
-              Loader {
-                id: readerPreviousWarmup
-                x: -width - Style.space(12)
-                y: -height - Style.space(12)
-                width: readerPageSurface.width
-                height: readerPageSurface.height
-                active: root.readerMode && root.readerHasPages && root.readerPageIndex > 0
-                sourceComponent: readerNeighborWarmupComponent
-                property var pageData: root.readerPageIndex > 0
-                  ? root.readerPages[root.readerPageIndex - 1] : null
-                onLoaded: item.pageData = pageData
-                onPageDataChanged: if (item) item.pageData = pageData
-              }
-
-              Loader {
-                id: readerNextWarmup
-                x: -width - Style.space(12)
-                y: -height - Style.space(12)
-                width: readerPageSurface.width
-                height: readerPageSurface.height
-                active: root.readerMode && root.readerHasPages
-                  && root.readerPageIndex < root.readerPages.length - 1
-                sourceComponent: readerNeighborWarmupComponent
-                property var pageData: root.readerPageIndex < root.readerPages.length - 1
-                  ? root.readerPages[root.readerPageIndex + 1] : null
-                onLoaded: item.pageData = pageData
-                onPageDataChanged: if (item) item.pageData = pageData
-              }
-
               Item {
                 id: readerIncomingPage
                 x: 0
