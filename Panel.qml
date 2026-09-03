@@ -247,7 +247,6 @@ Panel {
   function scheduleSearch() {
     root.searchGeneration++
     root.selectedIndex = 0
-    resultModel.clear()
     root.copyFeedback = ""
     root.copyFailed = false
     copyFeedbackTimer.stop()
@@ -260,6 +259,7 @@ Panel {
   function startSearch(searchQuery, generation) {
     if (generation !== root.searchGeneration || searchQuery !== root.query) return
     if (searchQuery.trim() === "") {
+      resultModel.clear()
       root.statusText = "Search by word, phrase, or reference."
       return
     }
@@ -307,6 +307,7 @@ Panel {
   }
 
   function parseSearchOutput(raw) {
+    resultModel.clear()
     var lines = String(raw || "").split("\n")
     var found = 0
     for (var i = 0; i < lines.length; i++) {
