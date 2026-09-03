@@ -920,23 +920,33 @@ Panel {
   ListModel { id: recentModel }
 
   onReaderBookFilterChanged: root.filterBookCatalog()
-  onReaderModeChanged: {
-    if (readerState.readerMode) root.focusReaderKeyboard()
-    else {
-      root.stopReaderTurnAnimations()
-      readerState.readerDragging = false
-      readerState.readerTurning = false
-      readerState.readerTurnAngle = 0
-      readerState.readerTurnProgress = 0
+  onReaderLibraryOpenChanged: if (readerState.readerMode) root.focusReaderKeyboard()
+  onReduceMotionChanged: root.scheduleReaderStateSave()
+
+  // readerMode, readerPageIndex, and readerSelectedVerseIndex now live on
+  // readerState (ReaderState.qml), not on root, so their auto-generated
+  // onXChanged signals fire on readerState, not on root — a plain
+  // onReaderModeChanged: handler here would be (and briefly was) invalid.
+  Connections {
+    target: readerState
+    function onReaderModeChanged() {
+      if (readerState.readerMode) root.focusReaderKeyboard()
+      else {
+        root.stopReaderTurnAnimations()
+        readerState.readerDragging = false
+        readerState.readerTurning = false
+        readerState.readerTurnAngle = 0
+        readerState.readerTurnProgress = 0
+      }
+    }
+    function onReaderPageIndexChanged() {
+      root.scheduleReaderStateSave()
+      if (readerPageFlick) readerPageFlick.contentY = 0
+    }
+    function onReaderSelectedVerseIndexChanged() {
+      root.scheduleReaderStateSave()
     }
   }
-  onReaderLibraryOpenChanged: if (readerState.readerMode) root.focusReaderKeyboard()
-  onReaderPageIndexChanged: {
-    root.scheduleReaderStateSave()
-    if (readerPageFlick) readerPageFlick.contentY = 0
-  }
-  onReaderSelectedVerseIndexChanged: root.scheduleReaderStateSave()
-  onReduceMotionChanged: root.scheduleReaderStateSave()
 
   Timer {
     id: searchTimer
@@ -949,15 +959,15 @@ Panel {
     id: readerPageTurn
     ParallelAnimation {
       NumberAnimation {
-        target: root
-        property: "readerState.readerTurnAngle"
+        target: readerState
+        property: "readerTurnAngle"
         to: 0
         duration: readerState.readerTurnApproachDuration
         easing.type: Easing.OutCubic
       }
       NumberAnimation {
-        target: root
-        property: "readerState.readerTurnProgress"
+        target: readerState
+        property: "readerTurnProgress"
         to: 0.5
         duration: readerState.readerTurnApproachDuration
         easing.type: Easing.OutCubic
@@ -965,15 +975,15 @@ Panel {
     }
     ParallelAnimation {
       NumberAnimation {
-        target: root
-        property: "readerState.readerTurnAngle"
+        target: readerState
+        property: "readerTurnAngle"
         to: 0
         duration: readerState.readerTurnSettleDuration
         easing.type: Easing.InOutCubic
       }
       NumberAnimation {
-        target: root
-        property: "readerState.readerTurnProgress"
+        target: readerState
+        property: "readerTurnProgress"
         to: 1
         duration: readerState.readerTurnSettleDuration
         easing.type: Easing.InOutCubic
@@ -985,15 +995,15 @@ Panel {
     id: readerPageCancel
     ParallelAnimation {
       NumberAnimation {
-        target: root
-        property: "readerState.readerTurnAngle"
+        target: readerState
+        property: "readerTurnAngle"
         to: 0
         duration: readerState.readerTurnCancelDuration
         easing.type: Easing.OutCubic
       }
       NumberAnimation {
-        target: root
-        property: "readerState.readerTurnProgress"
+        target: readerState
+        property: "readerTurnProgress"
         to: 0
         duration: readerState.readerTurnCancelDuration
         easing.type: Easing.OutCubic
@@ -1013,15 +1023,15 @@ Panel {
   SequentialAnimation {
     id: readerFolioPulseAnimation
     NumberAnimation {
-      target: root
-      property: "readerState.readerFolioPulse"
+      target: readerState
+      property: "readerFolioPulse"
       to: 1
       duration: 90
       easing.type: Easing.OutCubic
     }
     NumberAnimation {
-      target: root
-      property: "readerState.readerFolioPulse"
+      target: readerState
+      property: "readerFolioPulse"
       to: 0
       duration: 260
       easing.type: Easing.InOutCubic
