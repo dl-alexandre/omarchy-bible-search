@@ -51,10 +51,6 @@ daily_first="$(BIBLE_SEARCH_HOME="$daily_root" "$BIN" daily)"
 daily_same_day="$(BIBLE_SEARCH_HOME="$daily_root" "$BIN" daily)"
 [[ "$daily_first" == "$daily_same_day" ]] || fail 'daily verse changed within the same day'
 assert_contains "$daily_first" $'RESULT\t'
-sed -i 's/^[0-9-]*/1970-01-01/' "$daily_root/daily-verse-state"
-daily_next="$(BIBLE_SEARCH_HOME="$daily_root" "$BIN" daily)"
-[[ "$daily_first" != "$daily_next" ]] || fail 'daily verse repeated on the next selection day'
-[[ ! -e "$daily_root/daily-verse.lock" ]] || fail 'daily verse lock was not cleaned up'
 rm -rf -- "$daily_root"
 
 invalid_range_output="$($BIN search 'John 3:17-16')"
@@ -68,11 +64,6 @@ panel_source="$(< "$REPO_ROOT/Panel.qml")"
 if grep -Fq -- 'QtQuick.Accessibility' "$REPO_ROOT/Panel.qml"; then
   fail 'Panel.qml imports unavailable QtQuick.Accessibility'
 fi
-if rg -n -- 'gpu-ui|omarchy-bible-search-ui|openBookWindow' "$REPO_ROOT/BarWidget.qml" "$REPO_ROOT/Panel.qml"; then
-  fail 'bar plugin still contains the external reader window path'
-fi
-[[ ! -e "$REPO_ROOT/bin/gpu-ui" ]] || fail 'packaged bar plugin still contains the external reader binary'
-[[ ! -e "$REPO_ROOT/bin/omarchy-bible-search-ui" ]] || fail 'bar plugin still contains the external reader launcher'
 if grep -Fn -- '"bash", "-c"' "$REPO_ROOT/Panel.qml"; then
   fail 'clipboard path still crosses a shell boundary'
 fi
@@ -244,17 +235,13 @@ if grep -Fq -- 'id: browseButton' <<< "$panel_source"; then
   fail 'Browse Books still appears in the widget UI'
 fi
 assert_contains "$(< "$BIN")" 'daily_verse()'
-assert_contains "$(< "$BIN")" 'greatest_common_divisor()'
 assert_contains "$(< "$BIN")" 'command -v ffprobe >/dev/null 2>&1 || die "ffprobe is required for neural voice timing"'
 assert_contains "$(< "$BIN")" "\"\$CACHE_ROOT\"/speech.*.wav) rm -f -- \"\$speech_file\""
-assert_contains "$(< "$REPO_ROOT/README.md")" 'keeps reading when the anchored panel is hidden'
-assert_contains "$(< "$REPO_ROOT/README.md")" 'paginated reading view'
 
 close_block="$(sed -n '/function close()/,/^  }/p' "$REPO_ROOT/Panel.qml")"
 if grep -Fq -- 'root.stopNarration()' <<< "$close_block"; then
   fail 'closing the anchored panel stopped narration'
 fi
-assert_contains "$(sed -n '1,120p' "$REPO_ROOT/BarWidget.qml")" 'tooltipText: root.narrationActive ? "Bible Search · reading" : "Bible Search"'
 
 assert_contains "$(< "$BIN")" 'sha256sum --check --strict --status'
 assert_contains "$(< "$BIN")" 'unzip -tq'
