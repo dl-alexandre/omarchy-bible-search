@@ -357,6 +357,8 @@ search_corpus() {
     return 0
   fi
 
+  local -A canonical_cache=()
+  local canonical=""
   while IFS= read -r match; do
     [[ -z "$match" ]] && continue
     if [[ "$reference_mode" -eq 1 ]]; then
@@ -367,7 +369,11 @@ search_corpus() {
     book_code="${payload%% *}"
     payload="${payload#* }"
     chapter_verse="${payload%% *}"
-    reference="$(canonical_book_name_for_code "$book_code") $chapter_verse"
+    if [[ -z "${canonical_cache[$book_code]+x}" ]]; then
+      canonical_cache[$book_code]="$(canonical_book_name_for_code "$book_code")"
+    fi
+    canonical="${canonical_cache[$book_code]}"
+    reference="$canonical $chapter_verse"
     verse="${payload#* }"
     [[ "$reference" == " $chapter_verse" || -z "$verse" ]] && continue
     printf 'RESULT\t%s\t%s\n' "$reference" "$verse"
@@ -410,21 +416,39 @@ chapter_corpus() {
 }
 
 catalog_corpus() {
-  local root="" code="" book_file="" chapter_count=""
+  local root="" code="" book_file="" awk_output="" count=""
+  local -A chapter_counts=()
+  local -a book_files=()
   require_data || return 0
   root="$(active_book_root)"
 
   for code in "${BOOK_CODES[@]}"; do
     book_file="$root/${BOOK_NAMES[$code]}.txt"
-    [[ -f "$book_file" ]] || continue
-    chapter_count="$(awk -v code="$code" '
-      $1 == code {
+    [[ -f "$book_file" ]] && book_files+=("$book_file")
+  done
+
+  if ((${#book_files[@]} > 0)); then
+    awk_output="$(awk '
+      {
         split($2, location, ":")
-        if (location[1] + 0 > highest) highest = location[1] + 0
+        ch = location[1] + 0
+        if (ch > highest[$1]) highest[$1] = ch
       }
-      END { print highest + 0 }
-    ' "$book_file")"
-    printf 'BOOK\t%s\t%s\n' "$(canonical_book_name_for_code "$code")" "$chapter_count"
+      END {
+        for (c in highest) printf "%s\t%d\n", c, highest[c]
+      }
+    ' "${book_files[@]}")"
+
+    while IFS=$'\t' read -r code count; do
+      [[ -z "$code" ]] && continue
+      chapter_counts["$code"]="$count"
+    done <<< "$awk_output"
+  fi
+
+  for code in "${BOOK_CODES[@]}"; do
+    book_file="$root/${BOOK_NAMES[$code]}.txt"
+    [[ -f "$book_file" ]] || continue
+    printf 'BOOK\t%s\t%s\n' "${BOOK_NAMES[$code]//-/ }" "${chapter_counts[$code]:-0}"
   done
 }
 
@@ -604,8 +628,9 @@ daily_verse() {
     file="$root/${BOOK_NAMES[$code]}.txt"
     [[ -f "$file" ]] || continue
     files+=("$file")
-    total=$((total + $(wc -l < "$file")))
   done
+  (( ${#files[@]} > 0 )) || die "no verses found"
+  total="$(wc -l "${files[@]}" | awk 'END { print $1 + 0 }')"
   (( total > 0 )) || die "no verses found"
 
   day_of_year="$(date +%j)"
@@ -619,8 +644,22 @@ normalize_book_name() {
   local value="${1,,}"
   value="${value//-/ }"
   value="${value//./}"
-  value="$(printf '%s' "$value" | tr -s ' ' | sed -e 's/^ *//' -e 's/ *$//')"
+  while [[ "$value" == *'  '* ]]; do
+    value="${value//'  '/' '}"
+  done
+  value="${value# }"
+  value="${value% }"
   printf '%s' "$value"
+}
+
+declare -A BOOK_NAME_TO_CODE=()
+
+populate_book_name_to_code() {
+  local code=""
+  for code in "${BOOK_CODES[@]}"; do
+    BOOK_NAME_TO_CODE["$(normalize_book_name "${BOOK_NAMES[$code]}")"]="$code"
+    BOOK_NAME_TO_CODE["${code,,}"]="$code"
+  done
 }
 
 canonical_book_name_for_code() {
@@ -633,7 +672,6 @@ canonical_book_name_for_code() {
 book_code_for_name() {
   local needle
   needle="$(normalize_book_name "$1")"
-  local code filename candidate
 
   case "$needle" in
     gen|ge) printf 'GEN'; return 0 ;;
@@ -702,14 +740,10 @@ book_code_for_name() {
     rev|re) printf 'REV'; return 0 ;;
   esac
 
-  for code in "${!BOOK_NAMES[@]}"; do
-    filename="${BOOK_NAMES[$code]}"
-    candidate="$(normalize_book_name "$filename")"
-    if [[ "$needle" == "$candidate" || "${needle^^}" == "$code" ]]; then
-      printf '%s' "$code"
-      return 0
-    fi
-  done
+  if [[ ${#BOOK_NAME_TO_CODE[@]} -eq 0 ]]; then
+    populate_book_name_to_code
+  fi
+  printf '%s' "${BOOK_NAME_TO_CODE[$needle]:-}"
 }
 
 main() {
