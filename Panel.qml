@@ -16,6 +16,11 @@ Panel {
   property var anchorItem: null
   property var hostWidget: null
   property alias resultModel: resultModel
+  property alias bookDisplayModel: bookDisplayModel
+  property alias chapterPickerModel: chapterPickerModel
+  property alias bookmarkModel: bookmarkModel
+  property alias recentModel: recentModel
+  property alias keyCatcher: keyCatcher
   property string query: ""
   property bool dailyView: false
   property string statusText: "Search by word, phrase, or reference."
@@ -576,18 +581,18 @@ Panel {
         root.readerBookCursor = Math.max(0, Math.min(bookDisplayModel.count - 1, root.readerBookCursor + dy))
         var book = bookDisplayModel.get(root.readerBookCursor)
         root.selectCatalogBook(book.bookName, book.chapterCount)
-        readerBookList.positionViewAtIndex(root.readerBookCursor, ListView.Contain)
+        readerLibrary.bookList.positionViewAtIndex(root.readerBookCursor, ListView.Contain)
       } else if (root.readerLibraryFocus === "chapters" && chapterPickerModel.count > 0) {
-        var columns = Math.max(1, Math.floor(readerChapterGrid.width / readerChapterGrid.cellWidth))
+        var columns = Math.max(1, Math.floor(readerLibrary.chapterGrid.width / readerLibrary.chapterGrid.cellWidth))
         var delta = dx !== 0 ? dx : dy * columns
         root.readerChapterCursor = Math.max(0, Math.min(chapterPickerModel.count - 1, root.readerChapterCursor + delta))
-        readerChapterGrid.positionViewAtIndex(root.readerChapterCursor, GridView.Contain)
+        readerLibrary.chapterGrid.positionViewAtIndex(root.readerChapterCursor, GridView.Contain)
       }
     } else {
       var model = root.readerLibraryTab === "saved" ? bookmarkModel : recentModel
       if (dy !== 0 && model.count > 0) {
         root.readerListCursor = Math.max(0, Math.min(model.count - 1, root.readerListCursor + dy))
-        readerStoredList.positionViewAtIndex(root.readerListCursor, ListView.Contain)
+        readerLibrary.storedList.positionViewAtIndex(root.readerListCursor, ListView.Contain)
       }
     }
   }
@@ -1252,7 +1257,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: searchField.activeFocus || readerBookFilterField.activeFocus
+      blocked: searchField.activeFocus || readerLibrary.bookFilterField.activeFocus
       onCloseRequested: {
         if (root.readerLibraryOpen) root.readerLibraryOpen = false
         else root.close()
@@ -1288,7 +1293,7 @@ Panel {
           return
         }
         if (text === "b" || text === "B") root.readerLibraryOpen = !root.readerLibraryOpen
-        else if (text === "/" && root.readerLibraryOpen && root.readerLibraryTab === "books") readerBookFilterField.forceActiveFocus()
+        else if (text === "/" && root.readerLibraryOpen && root.readerLibraryTab === "books") readerLibrary.bookFilterField.forceActiveFocus()
         else if ((text === "n" || text === "N") && !root.readerLibraryOpen) root.moveReaderPage(1)
         else if ((text === "p" || text === "P") && !root.readerLibraryOpen) root.moveReaderPage(-1)
         else if ((text === "s" || text === "S") && !root.readerLibraryOpen) root.toggleCurrentBookmark()
@@ -1521,338 +1526,9 @@ Panel {
 
             }
 
-            Item {
+            LibraryView {
               id: readerLibrary
-              width: parent.width
-              height: root.readerLibraryOpen ? Style.space(360) : 0
-              visible: root.readerLibraryOpen
-              clip: true
-
-              Column {
-                anchors.fill: parent
-                spacing: Style.spacing.xs
-
-                Row {
-                  id: libraryTabRow
-                  width: parent.width
-                  height: Style.space(32)
-
-                  Repeater {
-                    model: [
-                      { key: "books", label: "Books" },
-                      { key: "saved", label: "Saved" },
-                      { key: "recent", label: "Recent" }
-                    ]
-                    delegate: Item {
-                      required property var modelData
-                      width: libraryTabRow.width / 3
-                      height: parent.height
-
-                      Text {
-                        anchors.centerIn: parent
-                        text: parent.modelData.label
-                        color: root.readerLibraryTab === parent.modelData.key ? root.popupForeground : root.popupForeground
-                        opacity: root.readerLibraryTab === parent.modelData.key ? 1 : 0.5
-                        font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                        font.pixelSize: Style.font.caption
-                      }
-
-                      Rectangle {
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.bottom: parent.bottom
-                        height: 2
-                        color: root.readerLibraryTab === parent.modelData.key ? Color.accent : "transparent"
-                      }
-
-                      MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.setLibraryTab(parent.modelData.key)
-                      }
-                    }
-                  }
-                }
-
-                Item {
-                  width: parent.width
-                  height: Style.space(256)
-
-                  Item {
-                    anchors.fill: parent
-                    visible: root.readerLibraryTab === "books"
-
-                    TextField {
-                      id: readerBookFilterField
-                      anchors.left: parent.left
-                      anchors.right: parent.right
-                      anchors.top: parent.top
-                      height: implicitHeight
-                      placeholderText: "Filter books…"
-                      text: root.readerBookFilter
-                      onTextChanged: root.readerBookFilter = text
-                      Keys.onEscapePressed: {
-                        if (text !== "") {
-                          text = ""
-                        } else {
-                          focus = false
-                          keyCatcher.forceActiveFocus()
-                        }
-                      }
-                    }
-
-                    ListView {
-                      id: readerBookList
-                      anchors.left: parent.left
-                      anchors.top: readerBookFilterField.bottom
-                      anchors.topMargin: Style.spacing.xs
-                      anchors.bottom: parent.bottom
-                      width: Style.space(140)
-                      clip: true
-                      model: bookDisplayModel
-                      spacing: Style.space(2)
-                      delegate: CursorSurface {
-                        required property string bookName
-                        required property int chapterCount
-                        required property int index
-                        width: readerBookList.width
-                        height: Style.space(28)
-                        hasCursor: root.readerLibraryFocus === "books" && root.readerBookCursor === index
-                        current: root.readerCatalogBook === bookName
-                        foreground: root.popupForeground
-                        accent: Color.accent
-                        Text {
-                          anchors.left: parent.left
-                          anchors.leftMargin: Style.spacing.sm
-                          anchors.verticalCenter: parent.verticalCenter
-                          text: bookName
-                          color: root.readerLibraryFocus === "books" && root.readerBookCursor === index ? Color.accent : root.popupForeground
-                          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                          font.pixelSize: Style.font.bodySmall
-                        }
-                        MouseArea {
-                          id: bookMouse
-                          anchors.fill: parent
-                          hoverEnabled: true
-                          cursorShape: Qt.PointingHandCursor
-                          onClicked: {
-                            root.readerBookCursor = index
-                            root.readerLibraryFocus = "books"
-                            root.selectCatalogBook(bookName, chapterCount)
-                          }
-                        }
-                        HoverHandler {
-                          onHoveredChanged: if (hovered) {
-                            root.readerBookCursor = index
-                            root.readerLibraryFocus = "books"
-                          }
-                        }
-                      }
-                    }
-
-                    Column {
-                      anchors.left: readerBookList.right
-                      anchors.leftMargin: Style.spacing.sm
-                      anchors.right: parent.right
-                      anchors.top: readerBookFilterField.bottom
-                      anchors.topMargin: Style.spacing.xs
-                      anchors.bottom: parent.bottom
-                      spacing: Style.spacing.xs
-                      GridView {
-                        id: readerChapterGrid
-                        width: parent.width
-                        height: parent.height
-                        clip: true
-                        model: chapterPickerModel
-                        cellWidth: Math.max(Style.space(32), Math.floor(width / 5))
-                        cellHeight: cellWidth
-                        delegate: Rectangle {
-                          required property int chapterNumber
-                          required property int index
-                          width: readerChapterGrid.cellWidth - Style.space(6)
-                          height: readerChapterGrid.cellHeight - Style.space(6)
-                          radius: Style.space(5)
-                          color: (root.readerLibraryFocus === "chapters" && root.readerChapterCursor === index)
-                            ? Style.hoverFillFor(root.popupForeground, Color.accent)
-                            : Style.normalFillFor(root.popupForeground, Color.accent)
-                          border.width: 0
-                          Text {
-                            anchors.centerIn: parent
-                            text: chapterNumber
-                            color: (root.readerLibraryFocus === "chapters" && root.readerChapterCursor === index) ? Color.accent : root.popupForeground
-                            opacity: (root.readerLibraryFocus === "chapters" && root.readerChapterCursor === index) ? 1 : 0.7
-                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                            font.pixelSize: Style.font.caption
-                          }
-                          MouseArea {
-                            id: chapterMouse
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: {
-                              root.readerChapterCursor = index
-                              root.readerLibraryFocus = "chapters"
-                              root.openReaderChapter(root.readerCatalogBook, chapterNumber, "", -1, -1)
-                            }
-                          }
-                          HoverHandler {
-                            onHoveredChanged: if (hovered) {
-                              root.readerChapterCursor = index
-                              root.readerLibraryFocus = "chapters"
-                            }
-                          }
-                        }
-                      }
-                    }
-
-                    Column {
-                      x: 0
-                      y: readerBookFilterField.y + readerBookFilterField.height
-                      width: parent.width
-                      height: Math.max(0, parent.height - y)
-                      visible: bookDisplayModel.count === 0 && root.readerBookFilter.trim() !== ""
-                      spacing: Style.spacing.xs
-                      Item {
-                        width: 1
-                        height: Style.space(72)
-                      }
-                      Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "No books match “" + root.readerBookFilter + "”"
-                        textFormat: Text.PlainText
-                        color: root.popupForeground
-                        font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                        font.pixelSize: Style.font.body
-                        font.bold: true
-                      }
-                      Text {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        text: "Press Escape to clear the filter."
-                        textFormat: Text.PlainText
-                        color: root.popupForeground
-                        opacity: 0.5
-                        font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                        font.pixelSize: Style.font.caption
-                      }
-                    }
-                  }
-
-                  ListView {
-                    id: readerStoredList
-                    anchors.fill: parent
-                    visible: root.readerLibraryTab === "saved" || root.readerLibraryTab === "recent"
-                    clip: true
-                    spacing: Style.spacing.xs
-                    model: root.readerLibraryTab === "saved" ? bookmarkModel : recentModel
-                    delegate: CursorSurface {
-                      required property string reference
-                      required property string chapterLabel
-                      required property int pageIndex
-                      required property int verseIndex
-                      required property int index
-                      width: ListView.view.width
-                      height: Style.space(48)
-                      hasCursor: root.readerLibraryFocus === "list" && root.readerListCursor === index
-                      foreground: root.popupForeground
-                      accent: Color.accent
-                      bordered: true
-                      Column {
-                        anchors.left: parent.left
-                        anchors.leftMargin: Style.spacing.sm
-                        anchors.right: savedDeleteButton.left
-                        anchors.rightMargin: Style.spacing.xs
-                        anchors.verticalCenter: parent.verticalCenter
-                        Text {
-                          text: reference
-                          color: root.popupForeground
-                          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                          font.pixelSize: Style.font.bodySmall
-                          font.bold: true
-                        }
-                        Text {
-                          text: chapterLabel + "  ·  page " + (pageIndex + 1)
-                          color: root.popupForeground
-                          opacity: 0.48
-                          font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                          font.pixelSize: Style.font.caption
-                        }
-                      }
-                      MouseArea {
-                        id: savedMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                          root.readerListCursor = index
-                          root.readerLibraryFocus = "list"
-                          root.openStoredReader({ reference: reference, chapterLabel: chapterLabel, pageIndex: pageIndex, verseIndex: verseIndex })
-                        }
-                      }
-                      HoverHandler {
-                        onHoveredChanged: if (hovered) {
-                          root.readerListCursor = index
-                          root.readerLibraryFocus = "list"
-                        }
-                      }
-                      PanelActionButton {
-                        id: savedDeleteButton
-                        anchors.right: parent.right
-                        anchors.rightMargin: Style.spacing.xs
-                        anchors.verticalCenter: parent.verticalCenter
-                        z: 3
-                        visible: root.readerLibraryTab === "saved"
-                        enabled: visible
-                        iconText: "󰆴"
-                        tooltipText: "Remove from Saved"
-                        foreground: root.popupForeground
-                        hoverColor: Color.accent
-                        fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
-                        onClicked: root.removeBookmarkAt(index)
-                      }
-                    }
-                  }
-
-                  Column {
-                    anchors.centerIn: parent
-                    visible: root.readerLibraryTab === "saved" ? bookmarkModel.count === 0
-                      : root.readerLibraryTab === "recent" && recentModel.count === 0
-                    spacing: Style.spacing.xs
-                    Text {
-                      anchors.horizontalCenter: parent.horizontalCenter
-                      text: root.readerLibraryTab === "saved" ? "No saved verses yet" : "No recent chapters yet"
-                      color: root.popupForeground
-                      font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                      font.pixelSize: Style.font.body
-                      font.bold: true
-                    }
-                    Text {
-                      anchors.horizontalCenter: parent.horizontalCenter
-                      text: root.readerLibraryTab === "saved"
-                        ? "Focus a verse and choose Save."
-                        : "Open a chapter to begin your history."
-                      color: root.popupForeground
-                      opacity: 0.5
-                      font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                      font.pixelSize: Style.font.caption
-                    }
-                  }
-                }
-
-                Text {
-                  width: parent.width
-                  text: readerState.readerActionFeedback !== ""
-                    ? readerState.readerActionFeedback
-                    : root.catalogLoaded
-                      ? (root.readerLibraryTab === "saved" ? "↑↓ select  ·  ENTER open  ·  X remove" : "↑↓ select  ·  ENTER open  ·  TAB sections")
-                      : "Loading the offline library…"
-                  color: readerState.readerActionFeedback !== "" ? Color.accent : root.popupForeground
-                  opacity: readerState.readerActionFeedback !== "" ? 1 : 0.48
-                  font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                  font.pixelSize: Style.font.caption
-                  font.bold: readerState.readerActionFeedback !== ""
-                  wrapMode: Text.WordWrap
-                }
-              }
+              panel: root
             }
 
             Item {
