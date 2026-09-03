@@ -86,7 +86,6 @@ find_gpu_ui() {
   candidates+=(
     "$SCRIPT_ROOT/bin/gpu-ui"
     "$HOME/.local/bin/gpu-ui"
-    "$HOME/Documents/Codex/2026-08-30/build-a-retained-gpu-ui-runtime/build/gpu-ui"
     "$SCRIPT_ROOT/../build-a-retained-gpu-ui-runtime/build/gpu-ui"
   )
   for path in "${candidates[@]}"; do
