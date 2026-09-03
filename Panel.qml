@@ -72,6 +72,8 @@ Panel {
   property real narrationTimingScale: 1.0
   property double narrationVerseStartedAt: 0
   property var narrationWords: []
+  property var narrationCumulativeWeights: []
+  property real narrationCadenceTotal: 1
   property bool narrationCardPinned: false
   property bool readerMode: false
   property bool readerLoading: false
@@ -386,11 +388,19 @@ Panel {
   }
 
   function narrationCadenceWeight() {
+    // Computes the cumulative cadence-weight array for the current
+    // root.narrationWords ONCE (called when a verse begins narrating),
+    // so the per-tick highlight update never has to re-run the
+    // regex-heavy wordCadenceWeight() for every word in the verse.
     var total = 0
+    var cumulative = []
     for (var i = 0; i < root.narrationWords.length; i++) {
       total += root.wordCadenceWeight(root.narrationWords[i])
+      cumulative.push(total)
     }
-    return Math.max(1, total)
+    root.narrationCumulativeWeights = cumulative
+    root.narrationCadenceTotal = Math.max(1, total)
+    return root.narrationCadenceTotal
   }
 
   function baseNarrationMs(words) {
@@ -414,7 +424,6 @@ Panel {
     var observed = Math.max(0.55, Math.min(1.9, elapsed / baseline))
     root.narrationTimingScale = Math.max(0.55, Math.min(1.9,
       (root.narrationTimingScale * 0.72) + (observed * 0.28)))
-    root.scheduleReaderStateSave()
   }
 
   function estimateNarrationMs(words) {
@@ -431,11 +440,10 @@ Panel {
     }
     var spokenDuration = Math.max(1, root.narrationEstimatedMs - leadIn)
     var cadencePosition = Math.min(1, (root.narrationElapsedMs - leadIn) / spokenDuration)
-      * root.narrationCadenceWeight()
-    var elapsedWeight = 0
-    for (var i = 0; i < root.narrationWords.length; i++) {
-      elapsedWeight += root.wordCadenceWeight(root.narrationWords[i])
-      if (cadencePosition < elapsedWeight) {
+      * root.narrationCadenceTotal
+    var weights = root.narrationCumulativeWeights
+    for (var i = 0; i < weights.length; i++) {
+      if (cadencePosition < weights[i]) {
         root.narrationWordIndex = i
         return
       }
@@ -1122,6 +1130,7 @@ Panel {
     if (root.narrationIndex >= root.narrationQueue.length) {
       root.narrationStatus = root.narrationMode === "chapter" ? "Chapter finished" : "Finished reading"
       root.narrationMode = ""
+      root.scheduleReaderStateSave()
       return
     }
     var row = root.narrationQueue[root.narrationIndex]
@@ -1131,6 +1140,7 @@ Panel {
       if (root.readerMode) root.syncReaderPageToVerse(root.readerSelectedVerseIndex)
     }
     root.narrationWords = root.wordsFor(row.verse)
+    root.narrationCadenceWeight()
     root.narrationWordIndex = 0
     root.narrationElapsedMs = 0
     root.narrationWarmupRemainingMs = 0
@@ -1233,6 +1243,7 @@ Panel {
     if (chapterProc.running) chapterProc.running = false
     if (root.ttsChecked && !root.ttsAvailable) root.showNarrationUnavailable()
     else if (root.narrationStatus !== "") root.narrationStatus = "Stopped"
+    root.scheduleReaderStateSave()
   }
 
   function copyResult(index) {
