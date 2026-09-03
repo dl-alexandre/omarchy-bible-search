@@ -41,7 +41,7 @@ resolve_qmllint() {
 }
 
 if qmllint_bin="$(resolve_qmllint)"; then
-  for qml_file in Panel.qml BarWidget.qml; do
+  for qml_file in Panel.qml BarWidget.qml NarrationController.qml; do
     "$qmllint_bin" "$REPO_ROOT/$qml_file" >/dev/null 2>&1 \
       || fail "$qml_file failed to parse ($qmllint_bin exited non-zero)"
   done

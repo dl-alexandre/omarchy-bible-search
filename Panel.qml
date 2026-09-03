@@ -28,53 +28,11 @@ Panel {
   property string copyFeedback: ""
   property bool copyFailed: false
   property string copyReference: ""
-  readonly property var ttsCandidates: ["espeak-ng", "espeak", "spd-say"]
-  property int ttsCandidateIndex: 0
-  property bool ttsChecked: false
-  property string ttsEngine: ""
-  property bool piperReady: false
-  property bool narrationPaused: false
-  property real narrationSpeed: 1.0
   property string preferredVoice: "male"
   property bool dailyOnOpen: true
   property bool settingsOpen: false
-  property string narrationStatus: ""
-  property var narrationQueue: []
-  property int narrationIndex: 0
-  property string narrationMode: ""
-  property int narrationGeneration: 0
-  property int ttsProcessGeneration: 0
-  property bool narrationStopPending: false
-  property var pendingNarrationQueue: []
-  property string pendingNarrationMode: ""
-  property int pendingNarrationIndex: 0
-  property int pendingNarrationGeneration: 0
   property int chapterRequestGeneration: 0
   property int activeChapterRequest: 0
-  property int narrationWordIndex: 0
-  property int narrationElapsedMs: 0
-  property int narrationWarmupRemainingMs: 0
-  property int narrationLeadInMs: 110
-  property string preparedSpeechPath: ""
-  property string prefetchedSpeechPath: ""
-  property int prefetchedSpeechDurationMs: 0
-  property int prefetchedSpeechIndex: -1
-  property string prefetchedSpeechReference: ""
-  property string prefetchedSpeechVerse: ""
-  property int prefetchRequestIndex: -1
-  property int prefetchRequestGeneration: 0
-  property string topSpeechPath: ""
-  property int topSpeechDurationMs: 0
-  property string topSpeechReference: ""
-  property string topSpeechVerse: ""
-  property int narrationEstimatedMs: 0
-  property int narrationWpm: 165
-  property real narrationTimingScale: 1.0
-  property double narrationVerseStartedAt: 0
-  property var narrationWords: []
-  property var narrationCumulativeWeights: []
-  property real narrationCadenceTotal: 1
-  property bool narrationCardPinned: false
   property bool readerMode: false
   property bool readerLoading: false
   property string readerChapterLabel: ""
@@ -121,22 +79,26 @@ Panel {
   property string readerActionFeedback: ""
   property var topicSuggestions: ["faith", "comfort", "wisdom", "love"]
   property int topicSuggestionOffset: -1
-  readonly property bool usePiper: root.piperReady && root.preferredVoice === "male"
-  readonly property bool ttsAvailable: root.usePiper || (root.ttsEngine !== "" && root.ttsEngine !== "piper")
-  readonly property bool narrationActive: ttsProc.running || speechPrepareProc.running || speechPrefetchProc.running || chapterProc.running || root.narrationStopPending
-  readonly property bool readAlongVisible: root.narrationCardPinned && root.narrationQueue.length > 0
+  readonly property NarrationController narration: NarrationController {
+    panel: root
+  }
+
+  readonly property bool usePiper: narration.piperReady && root.preferredVoice === "male"
+  readonly property bool ttsAvailable: root.usePiper || (narration.ttsEngine !== "" && narration.ttsEngine !== "piper")
+  readonly property bool narrationActive: narration.ttsProc.running || narration.speechPrepareProc.running || narration.speechPrefetchProc.running || chapterProc.running || narration.narrationStopPending
+  readonly property bool readAlongVisible: narration.narrationCardPinned && narration.narrationQueue.length > 0
   readonly property bool readAlongDuplicatesTop: root.readAlongVisible && resultModel.count > 0
-    && root.narrationDisplayRow && root.narrationDisplayRow.reference === resultModel.get(0).reference
-  readonly property bool topSpeechReady: resultModel.count > 0 && root.topSpeechPath !== ""
-    && root.topSpeechReference === resultModel.get(0).reference && root.topSpeechVerse === resultModel.get(0).verse
-  readonly property int narrationDisplayIndex: root.narrationQueue.length === 0
+    && narration.narrationDisplayRow && narration.narrationDisplayRow.reference === resultModel.get(0).reference
+  readonly property bool topSpeechReady: resultModel.count > 0 && narration.topSpeechPath !== ""
+    && narration.topSpeechReference === resultModel.get(0).reference && narration.topSpeechVerse === resultModel.get(0).verse
+  readonly property int narrationDisplayIndex: narration.narrationQueue.length === 0
     ? -1
-    : Math.min(root.narrationIndex, root.narrationQueue.length - 1)
-  readonly property real narrationProgress: root.narrationQueue.length === 0
+    : Math.min(narration.narrationIndex, narration.narrationQueue.length - 1)
+  readonly property real narrationProgress: narration.narrationQueue.length === 0
     ? 0
-      : Math.min(1, (root.narrationIndex + (root.narrationMode !== ""
-      ? (root.narrationWordIndex + 1) / Math.max(1, root.narrationWords.length)
-      : 1)) / root.narrationQueue.length)
+      : Math.min(1, (narration.narrationIndex + (narration.narrationMode !== ""
+      ? (narration.narrationWordIndex + 1) / Math.max(1, narration.narrationWords.length)
+      : 1)) / narration.narrationQueue.length)
   readonly property bool readerHasPages: root.readerPages.length > 0
   readonly property var currentReaderPage: root.readerHasPages
     ? root.readerPages[Math.max(0, Math.min(root.readerPageIndex, root.readerPages.length - 1))]
@@ -170,7 +132,7 @@ Panel {
   function open() {
     root.controller.show()
     root.rotateTopicSuggestions()
-    if (root.ttsChecked && !root.ttsAvailable && !ttsDetectProc.running) root.detectTts()
+    if (narration.ttsChecked && !root.ttsAvailable && !narration.ttsDetectProc.running) narration.detectTts()
     if (root.dailyOnOpen && root.query.trim() === "" && resultModel.count === 0 && !dailyProc.running) {
       root.showDailyVerse()
     } else if (root.query.trim() !== "" && resultModel.count === 0 && !searchProc.running && !root.searchStopPending) {
@@ -231,7 +193,7 @@ Panel {
     root.selectedIndex = 0
     if (resultModel.count > 0) {
       root.statusText = "Today · " + resultModel.get(0).reference
-      root.preloadTopSpeech()
+      narration.preloadTopSpeech()
     } else {
       root.statusText = "Today’s verse was unavailable"
     }
@@ -278,21 +240,6 @@ Panel {
     searchProc.running = true
   }
 
-  function detectTts() {
-    if (ttsDetectProc.running) return
-    root.ttsChecked = false
-    root.ttsEngine = ""
-    root.ttsCandidateIndex = 0
-    ttsDetectProc.command = [root.ttsCandidates[0], "--version"]
-    ttsDetectProc.running = true
-    if (!voiceStatusProc.running) voiceStatusProc.running = true
-  }
-
-  function installVoiceEngine() {
-    root.narrationStatus = "Install espeak-ng in the terminal, then choose Check again."
-    Quickshell.execDetached(["omarchy-launch-terminal", "omarchy", "pkg", "add", "espeak-ng"])
-  }
-
   function runSearch() {
     var searchQuery = root.query
     var generation = root.searchGeneration
@@ -329,7 +276,7 @@ Panel {
     }
     if (found > 0) {
       root.statusText = found + " result" + (found === 1 ? "" : "s") + " · click to copy"
-      root.preloadTopSpeech()
+      narration.preloadTopSpeech()
     }
     root.selectedIndex = 0
   }
@@ -352,12 +299,6 @@ Panel {
     Quickshell.execDetached(["omarchy-launch-tui", root.scriptPath, "browse"])
   }
 
-  function showNarrationUnavailable() {
-    root.narrationStatus = root.ttsChecked
-      ? "No local voice engine found · install espeak-ng, espeak, or speech-dispatcher"
-      : "Checking for a local voice engine…"
-  }
-
   function queueFromOutput(raw) {
     var lines = String(raw || "").split("\n")
     var queue = []
@@ -375,297 +316,37 @@ Panel {
     return trimmed === "" ? [] : trimmed.split(/\s+/)
   }
 
-  function wordDurationMs(word) {
-    var value = String(word || "")
-    var duration = 60000 / Math.max(80, root.narrationWpm)
-    duration *= 1 + Math.min(0.7, Math.max(0, value.length - 5) * 0.035)
-    if (/[,;:]$/.test(value)) duration += 90
-    if (/[.!?]$/.test(value)) duration += 220
-    return Math.round(duration * Math.max(0.55, Math.min(1.9, root.narrationTimingScale)))
-  }
-
-  function wordCadenceWeight(word) {
-    var value = String(word || "")
-    var spoken = value.replace(/^[“‘\"'([{]+|[”’\"')\]}.,;:!?—–-]+$/g, "")
-    var weight = 0.72 + Math.min(0.92, Math.max(1, spoken.length) * 0.075)
-    if (/[-—–]$/.test(value)) weight += 0.32
-    if (/[,;:]$/.test(value)) weight += 0.42
-    if (/[.!?][”’\"']?$/.test(value)) weight += 0.78
-    return weight
-  }
-
-  function narrationCadenceWeight() {
-    // Computes the cumulative cadence-weight array for the current
-    // root.narrationWords ONCE (called when a verse begins narrating),
-    // so the per-tick highlight update never has to re-run the
-    // regex-heavy wordCadenceWeight() for every word in the verse.
-    var total = 0
-    var cumulative = []
-    for (var i = 0; i < root.narrationWords.length; i++) {
-      total += root.wordCadenceWeight(root.narrationWords[i])
-      cumulative.push(total)
-    }
-    root.narrationCumulativeWeights = cumulative
-    root.narrationCadenceTotal = Math.max(1, total)
-    return root.narrationCadenceTotal
-  }
-
-  function baseNarrationMs(words) {
-    var total = 0
-    for (var i = 0; i < words.length; i++) {
-      var value = String(words[i] || "")
-      var duration = 60000 / Math.max(80, root.narrationWpm)
-      duration *= 1 + Math.min(0.7, Math.max(0, value.length - 5) * 0.035)
-      if (/[,;:]$/.test(value)) duration += 90
-      if (/[.!?]$/.test(value)) duration += 220
-      total += Math.round(duration)
-    }
-    return Math.max(700, total)
-  }
-
-  function calibrateNarrationTiming() {
-    if (root.narrationVerseStartedAt <= 0 || root.narrationWords.length === 0) return
-    var elapsed = Date.now() - root.narrationVerseStartedAt
-    var baseline = root.baseNarrationMs(root.narrationWords)
-    if (elapsed < 250 || baseline <= 0) return
-    var observed = Math.max(0.55, Math.min(1.9, elapsed / baseline))
-    root.narrationTimingScale = Math.max(0.55, Math.min(1.9,
-      (root.narrationTimingScale * 0.72) + (observed * 0.28)))
-  }
-
-  function estimateNarrationMs(words) {
-    var total = 0
-    for (var i = 0; i < words.length; i++) total += root.wordDurationMs(words[i])
-    return Math.max(700, total)
-  }
-
-  function updateNarrationWord() {
-    var leadIn = root.piperReady ? root.narrationLeadInMs : 0
-    if (root.narrationElapsedMs <= leadIn) {
-      root.narrationWordIndex = 0
-      return
-    }
-    var spokenDuration = Math.max(1, root.narrationEstimatedMs - leadIn)
-    var cadencePosition = Math.min(1, (root.narrationElapsedMs - leadIn) / spokenDuration)
-      * root.narrationCadenceTotal
-    var weights = root.narrationCumulativeWeights
-    for (var i = 0; i < weights.length; i++) {
-      if (cadencePosition < weights[i]) {
-        root.narrationWordIndex = i
-        return
-      }
-    }
-    root.narrationWordIndex = Math.max(0, root.narrationWords.length - 1)
-  }
-
-  function advanceNarrationWord() {
-    if (!ttsProc.running || root.narrationWords.length === 0) return
-    if (root.narrationWarmupRemainingMs > 0) {
-      root.narrationWarmupRemainingMs = Math.max(0, root.narrationWarmupRemainingMs - narrationHighlightTimer.interval)
-      return
-    }
-    root.narrationElapsedMs = Math.min(root.narrationEstimatedMs, root.narrationElapsedMs + narrationHighlightTimer.interval)
-    root.updateNarrationWord()
-  }
-
-  function narrationRowAt(offset) {
-    var index = root.narrationDisplayIndex + offset
-    if (index < 0 || index >= root.narrationQueue.length) return null
-    return root.narrationQueue[index]
-  }
-
-  function beginNarration(queue, mode, generation, startIndex) {
-    if (generation !== root.narrationGeneration || queue.length === 0) return
-    root.narrationQueue = queue
-    root.narrationIndex = Math.max(0, Math.min(startIndex || 0, queue.length - 1))
-    root.narrationMode = mode
-    root.narrationStatus = mode === "chapter"
-      ? "Reading chapter · " + queue.length + " verses"
-      : "Reading " + queue[0].reference
-    root.speakNext(generation)
-  }
-
-  function continuePendingNarration() {
-    root.narrationStopPending = false
-    var nextQueue = root.pendingNarrationQueue
-    var nextMode = root.pendingNarrationMode
-    var nextIndex = root.pendingNarrationIndex
-    var nextGeneration = root.pendingNarrationGeneration
-    root.pendingNarrationQueue = []
-    root.pendingNarrationMode = ""
-    root.pendingNarrationIndex = 0
-    root.pendingNarrationGeneration = 0
-    if (nextQueue.length > 0 && nextGeneration === root.narrationGeneration) {
-      Qt.callLater(function() { root.beginNarration(nextQueue, nextMode, nextGeneration, nextIndex) })
-    }
-  }
-
-  function cleanupPreparedSpeech() {
-    if (root.preparedSpeechPath === "") return
-    Quickshell.execDetached([root.scriptPath, "speech-cleanup", root.preparedSpeechPath])
-    root.preparedSpeechPath = ""
-  }
-
-  function cleanupPrefetchedSpeech() {
-    if (speechPrefetchProc.running) speechPrefetchProc.running = false
-    if (root.prefetchedSpeechPath !== "") {
-      Quickshell.execDetached([root.scriptPath, "speech-cleanup", root.prefetchedSpeechPath])
-    }
-    root.prefetchedSpeechPath = ""
-    root.prefetchedSpeechDurationMs = 0
-    root.prefetchedSpeechIndex = -1
-    root.prefetchedSpeechReference = ""
-    root.prefetchedSpeechVerse = ""
-    root.prefetchRequestIndex = -1
-    root.prefetchRequestGeneration = 0
-  }
-
-  function cleanupTopSpeech() {
-    if (topSpeechProc.running) topSpeechProc.running = false
-    if (root.topSpeechPath !== "") {
-      Quickshell.execDetached([root.scriptPath, "speech-cleanup", root.topSpeechPath])
-    }
-    root.topSpeechPath = ""
-    root.topSpeechDurationMs = 0
-    root.topSpeechReference = ""
-    root.topSpeechVerse = ""
-  }
-
-  function preloadTopSpeech() {
-    if (!root.usePiper || resultModel.count === 0 || topSpeechProc.running) return
-    var row = resultModel.get(0)
-    if (root.topSpeechPath !== "" && root.topSpeechReference === row.reference
-        && root.topSpeechVerse === row.verse) return
-    root.cleanupTopSpeech()
-    root.topSpeechReference = row.reference
-    root.topSpeechVerse = row.verse
-    topSpeechProc.command = [root.scriptPath, "prepare-speech", row.verse, String(root.narrationSpeed)]
-    topSpeechProc.running = true
-  }
-
-  function setNarrationSpeed(speed) {
-    root.narrationSpeed = Math.max(0.85, Math.min(1.15, Number(speed) || 1))
-    root.cleanupTopSpeech()
-    root.preloadTopSpeech()
-    root.scheduleReaderStateSave()
-  }
-
-  function toggleNarrationPause() {
-    if (!ttsProc.running || ttsProc.processId <= 0) {
-      if (resultModel.count > 0) root.readVerse(root.selectedIndex)
-      return
-    }
-    root.narrationPaused = !root.narrationPaused
-    Quickshell.execDetached(["kill", root.narrationPaused ? "-STOP" : "-CONT", String(ttsProc.processId)])
-    root.narrationStatus = root.narrationPaused ? "Paused · Space to resume" : "Reading · " + root.narrationDisplayRow.reference
-  }
-
-  function resumeNarrationProcessBeforeCancel() {
-    if (!root.narrationPaused || !ttsProc.running || ttsProc.processId <= 0) return
-    Quickshell.execDetached(["kill", "-CONT", String(ttsProc.processId)])
-    root.narrationPaused = false
-  }
-
-  function startPiperPlayback(path, durationMs, row) {
-    root.preparedSpeechPath = path
-    root.narrationEstimatedMs = Math.max(700, Number(durationMs) || root.narrationEstimatedMs)
-    root.narrationElapsedMs = 0
-    root.narrationWordIndex = 0
-    root.narrationVerseStartedAt = Date.now()
-    root.narrationStatus = "Neural voice · " + (row ? row.reference : "reading")
-    ttsProc.command = ["paplay", root.preparedSpeechPath]
-    ttsProc.running = true
-    root.startSpeechPrefetch()
-  }
-
-  function startSpeechPrefetch() {
-    if (!root.usePiper || speechPrefetchProc.running) return
-    var nextIndex = root.narrationIndex + 1
-    var nextRow = null
-    if (root.narrationMode === "chapter" && nextIndex < root.narrationQueue.length) {
-      nextRow = root.narrationQueue[nextIndex]
-    } else if (root.narrationMode === "verse" && root.selectedIndex + 1 < resultModel.count) {
-      nextIndex = -2
-      nextRow = resultModel.get(root.selectedIndex + 1)
-    }
-    if (!nextRow) return
-    root.cleanupPrefetchedSpeech()
-    root.prefetchRequestIndex = nextIndex
-    root.prefetchRequestGeneration = root.narrationGeneration
-    root.prefetchedSpeechReference = nextRow.reference
-    root.prefetchedSpeechVerse = nextRow.verse
-    speechPrefetchProc.command = [root.scriptPath, "prepare-speech", nextRow.verse, String(root.narrationSpeed)]
-    speechPrefetchProc.running = true
-  }
-
-  function requestNarration(queue, mode, startIndex) {
-    if (!root.ttsAvailable) {
-      root.showNarrationUnavailable()
-      return
-    }
-    if (!queue || queue.length === 0) return
-    var firstIndex = Math.max(0, Math.min(startIndex || 0, queue.length - 1))
-    root.narrationCardPinned = true
-    var firstRow = queue[firstIndex]
-    if (root.prefetchedSpeechPath === "" || root.prefetchedSpeechReference !== firstRow.reference
-        || root.prefetchedSpeechVerse !== firstRow.verse) root.cleanupPrefetchedSpeech()
-
-    if (chapterProc.running) {
-      root.chapterRequestGeneration++
-      chapterProc.running = false
-    }
-
-    root.narrationGeneration++
-    var generation = root.narrationGeneration
-    if (root.narrationStopPending || ttsProc.running || speechPrepareProc.running) {
-      root.pendingNarrationQueue = queue
-      root.pendingNarrationMode = mode
-      root.pendingNarrationIndex = firstIndex
-      root.pendingNarrationGeneration = generation
-      if (!root.narrationStopPending) {
-        root.narrationStopPending = true
-        if (ttsProc.running) {
-          root.resumeNarrationProcessBeforeCancel()
-          ttsProc.running = false
-        }
-        if (speechPrepareProc.running) speechPrepareProc.running = false
-      }
-      return
-    }
-    root.beginNarration(queue, mode, generation, firstIndex)
-  }
-
   function readVerse(index) {
     if (index < 0 || index >= resultModel.count) return
     var row = resultModel.get(index)
-    root.requestNarration([{ reference: row.reference, verse: row.verse }], "verse")
+    narration.requestNarration([{ reference: row.reference, verse: row.verse }], "verse")
   }
 
   function readChapter(index) {
     if (index < 0 || index >= resultModel.count) return
     if (!root.ttsAvailable) {
-      root.showNarrationUnavailable()
+      narration.showNarrationUnavailable()
       return
     }
     if (chapterProc.running) {
-      root.narrationStatus = "A chapter is already loading"
+      narration.narrationStatus = "A chapter is already loading"
       return
     }
 
     var row = resultModel.get(index)
     var match = String(row.reference || "").match(/^(.+)\s+([0-9]+):[0-9]+$/)
     if (!match) {
-      root.narrationStatus = "Select a verse with a chapter reference first"
+      narration.narrationStatus = "Select a verse with a chapter reference first"
       return
     }
 
-    root.stopNarration()
+    narration.stopNarration()
     root.chapterLoadPurpose = "narration"
     root.readerChapterLabel = match[1] + " " + match[2]
     root.chapterRequestGeneration++
     root.activeChapterRequest = root.chapterRequestGeneration
-    root.narrationMode = "chapter"
-    root.narrationStatus = "Loading " + match[1] + " " + match[2] + "…"
+    narration.narrationMode = "chapter"
+    narration.narrationStatus = "Loading " + match[1] + " " + match[2] + "…"
     chapterProc.command = [root.scriptPath, "chapter", match[1] + " " + match[2]]
     chapterProc.running = true
   }
@@ -842,7 +523,7 @@ Panel {
       root.toggleCurrentBookmark()
       break
     case "stop":
-      root.stopNarration()
+      narration.stopNarration()
       break
     }
     root.focusReaderKeyboard()
@@ -916,7 +597,7 @@ Panel {
     if (id === "read") root.readVerse(root.selectedIndex)
     else if (id === "book") root.openReader(root.selectedIndex)
     else if (id === "chapter") root.readChapter(root.selectedIndex)
-    else if (id === "stop") root.stopNarration()
+    else if (id === "stop") narration.stopNarration()
     else if (id === "daily") root.showDailyVerse()
     else if (id.indexOf("topic:") === 0) {
       var topic = root.topicSuggestions[Number(id.substring(6))]
@@ -1042,7 +723,7 @@ Panel {
   }
 
   function openReaderChapter(book, chapter, targetReference, restorePage, restoreVerse) {
-    root.stopNarration()
+    narration.stopNarration()
     root.readerMode = true
     root.readerLibraryOpen = false
     root.readerLoading = true
@@ -1057,7 +738,7 @@ Panel {
     root.chapterLoadPurpose = "reader"
     root.chapterRequestGeneration++
     root.activeChapterRequest = root.chapterRequestGeneration
-    root.narrationStatus = "Opening " + root.readerChapterLabel + "…"
+    narration.narrationStatus = "Opening " + root.readerChapterLabel + "…"
     chapterProc.command = [root.scriptPath, "chapter", root.readerChapterLabel]
     chapterProc.running = true
     root.focusReaderKeyboard()
@@ -1221,9 +902,9 @@ Panel {
     root.readerPaginated = state.readerPaginated !== false
     root.dailyOnOpen = state.dailyOnOpen !== false
     root.preferredVoice = state.preferredVoice === "system" ? "system" : "male"
-    root.narrationSpeed = [0.85, 1, 1.15].indexOf(Number(state.narrationSpeed)) >= 0 ? Number(state.narrationSpeed) : 1
+    narration.narrationSpeed = [0.85, 1, 1.15].indexOf(Number(state.narrationSpeed)) >= 0 ? Number(state.narrationSpeed) : 1
     var scale = Number(state.narrationTimingScale || 1)
-    root.narrationTimingScale = Math.max(0.55, Math.min(1.9, isNaN(scale) ? 1 : scale))
+    narration.narrationTimingScale = Math.max(0.55, Math.min(1.9, isNaN(scale) ? 1 : scale))
     root.readerStateLoading = false
     root.readerStateReady = true
     root.readerStateHydrated = true
@@ -1250,8 +931,8 @@ Panel {
       readerPaginated: root.readerPaginated,
       dailyOnOpen: root.dailyOnOpen,
       preferredVoice: root.preferredVoice,
-      narrationSpeed: root.narrationSpeed,
-      narrationTimingScale: root.narrationTimingScale
+      narrationSpeed: narration.narrationSpeed,
+      narrationTimingScale: narration.narrationTimingScale
     }, null, 2) + "\n")
   }
 
@@ -1316,133 +997,12 @@ Panel {
   function readReaderSelectedVerse() {
     if (!root.readerChapterQueue[root.readerSelectedVerseIndex]) return
     var row = root.readerChapterQueue[root.readerSelectedVerseIndex]
-    root.requestNarration([{ reference: row.reference, verse: row.verse }], "verse")
+    narration.requestNarration([{ reference: row.reference, verse: row.verse }], "verse")
   }
 
   function readReaderChapter() {
     if (root.readerChapterQueue.length === 0) return
-    root.requestNarration(root.readerChapterQueue, "chapter", root.readerSelectedVerseIndex)
-  }
-
-  function speakNext(generation) {
-    if (generation !== root.narrationGeneration || root.narrationQueue.length === 0) return
-    if (root.narrationIndex >= root.narrationQueue.length) {
-      root.narrationStatus = root.narrationMode === "chapter" ? "Chapter finished" : "Finished reading"
-      root.narrationMode = ""
-      root.scheduleReaderStateSave()
-      return
-    }
-    var row = root.narrationQueue[root.narrationIndex]
-    if (root.narrationMode === "chapter") {
-      var chapterIndex = root.readerChapterQueue.indexOf(row)
-      root.readerSelectedVerseIndex = chapterIndex >= 0 ? chapterIndex : root.narrationIndex
-      if (root.readerMode) root.syncReaderPageToVerse(root.readerSelectedVerseIndex)
-    }
-    root.narrationWords = root.wordsFor(row.verse)
-    root.narrationCadenceWeight()
-    root.narrationWordIndex = 0
-    root.narrationElapsedMs = 0
-    root.narrationWarmupRemainingMs = 0
-    root.narrationEstimatedMs = root.estimateNarrationMs(root.narrationWords)
-    root.narrationVerseStartedAt = 0
-    var voicePrefix = root.usePiper ? "Neural voice · " : "Reading · "
-    root.narrationStatus = root.narrationMode === "chapter"
-      ? voicePrefix + row.reference + " · " + (root.narrationIndex + 1) + "/" + root.narrationQueue.length
-      : voicePrefix + row.reference
-    root.ttsProcessGeneration = generation
-    if (root.usePiper) {
-      if (root.narrationMode === "verse" && root.topSpeechPath !== ""
-          && root.topSpeechReference === row.reference && root.topSpeechVerse === row.verse) {
-        var topPath = root.topSpeechPath
-        var topDuration = root.topSpeechDurationMs
-        root.topSpeechPath = ""
-        root.topSpeechDurationMs = 0
-        root.topSpeechReference = ""
-        root.topSpeechVerse = ""
-        root.startPiperPlayback(topPath, topDuration, row)
-        return
-      }
-      if (root.prefetchedSpeechPath !== "" && ((root.prefetchedSpeechIndex === root.narrationIndex)
-          || (root.prefetchedSpeechReference === row.reference && root.prefetchedSpeechVerse === row.verse))) {
-        var readyPath = root.prefetchedSpeechPath
-        var readyDuration = root.prefetchedSpeechDurationMs
-        root.prefetchedSpeechPath = ""
-        root.prefetchedSpeechDurationMs = 0
-        root.prefetchedSpeechIndex = -1
-        root.prefetchedSpeechReference = ""
-        root.prefetchedSpeechVerse = ""
-        root.startPiperPlayback(readyPath, readyDuration, row)
-        return
-      }
-      if (speechPrefetchProc.running) speechPrefetchProc.running = false
-      root.narrationStatus = "Preparing neural voice · " + row.reference
-      speechPrepareProc.command = [root.scriptPath, "prepare-speech", row.verse, String(root.narrationSpeed)]
-      speechPrepareProc.running = true
-      return
-    } else if (root.ttsEngine === "spd-say") {
-      ttsProc.command = [root.ttsEngine, "--wait", "--", row.verse]
-    } else {
-      ttsProc.command = [root.ttsEngine, "--", row.verse]
-    }
-    root.narrationVerseStartedAt = Date.now()
-    ttsProc.running = true
-  }
-
-  function skipNarration(delta) {
-    if (root.narrationQueue.length < 2 || root.narrationMode === "") return
-    var nextIndex = root.narrationIndex + delta
-    if (nextIndex < 0 || nextIndex >= root.narrationQueue.length) return
-
-    root.narrationGeneration++
-    var generation = root.narrationGeneration
-    root.pendingNarrationQueue = root.narrationQueue
-    root.pendingNarrationMode = root.narrationMode
-    root.pendingNarrationIndex = nextIndex
-    root.pendingNarrationGeneration = generation
-    root.cleanupPrefetchedSpeech()
-    if (ttsProc.running || speechPrepareProc.running) {
-      root.narrationStopPending = true
-      if (ttsProc.running) {
-        root.resumeNarrationProcessBeforeCancel()
-        ttsProc.running = false
-      }
-      if (speechPrepareProc.running) speechPrepareProc.running = false
-    } else {
-      root.beginNarration(root.narrationQueue, root.narrationMode, generation, nextIndex)
-      root.pendingNarrationQueue = []
-      root.pendingNarrationMode = ""
-      root.pendingNarrationIndex = 0
-      root.pendingNarrationGeneration = 0
-    }
-  }
-
-  function stopNarration() {
-    root.narrationGeneration++
-    root.narrationCardPinned = false
-    root.narrationQueue = []
-    root.narrationIndex = 0
-    root.narrationMode = ""
-    root.chapterRequestGeneration++
-    root.pendingNarrationQueue = []
-    root.pendingNarrationMode = ""
-    root.pendingNarrationIndex = 0
-    root.pendingNarrationGeneration = 0
-    root.cleanupPrefetchedSpeech()
-    root.cleanupPreparedSpeech()
-    if (ttsProc.running || speechPrepareProc.running) {
-      root.narrationStopPending = true
-      if (ttsProc.running) {
-        root.resumeNarrationProcessBeforeCancel()
-        ttsProc.running = false
-      }
-      if (speechPrepareProc.running) speechPrepareProc.running = false
-    } else {
-      root.narrationStopPending = false
-    }
-    if (chapterProc.running) chapterProc.running = false
-    if (root.ttsChecked && !root.ttsAvailable) root.showNarrationUnavailable()
-    else if (root.narrationStatus !== "") root.narrationStatus = "Stopped"
-    root.scheduleReaderStateSave()
+    narration.requestNarration(root.readerChapterQueue, "chapter", root.readerSelectedVerseIndex)
   }
 
   function copyResult(index) {
@@ -1493,26 +1053,6 @@ Panel {
     interval: 120
     repeat: false
     onTriggered: root.runSearch()
-  }
-
-  Timer {
-    id: narrationHighlightTimer
-    interval: 40
-    repeat: true
-    running: ttsProc.running && !root.narrationPaused && root.narrationWords.length > 0
-    onTriggered: root.advanceNarrationWord()
-  }
-
-  Timer {
-    id: narrationCompleteTimer
-    interval: 1400
-    repeat: false
-    onTriggered: {
-      if (!root.narrationActive && root.narrationMode === "") {
-        root.narrationCardPinned = false
-        root.narrationQueue = []
-      }
-    }
   }
 
   SequentialAnimation {
@@ -1599,7 +1139,7 @@ Panel {
   }
 
   Component.onCompleted: {
-    root.detectTts()
+    narration.detectTts()
     catalogProc.running = true
     stateInitProc.running = true
   }
@@ -1733,43 +1273,6 @@ Panel {
   }
 
   Process {
-    id: voiceStatusProc
-    command: [root.scriptPath, "voice-status"]
-    running: false
-    stdout: StdioCollector { id: voiceStatusOutput; waitForEnd: true }
-    onExited: function(exitCode) {
-      root.piperReady = exitCode === 0 && String(voiceStatusOutput.text).indexOf("VOICE\tpiper") >= 0
-      if (root.piperReady) {
-        root.ttsChecked = true
-        if (root.narrationStatus.indexOf("No local voice") === 0) root.narrationStatus = "Neural voice ready"
-        root.preloadTopSpeech()
-      }
-    }
-  }
-
-  Process {
-    id: ttsDetectProc
-    running: false
-    onExited: function(exitCode) {
-      if (exitCode === 0) {
-        root.ttsEngine = String(root.ttsCandidates[root.ttsCandidateIndex])
-        root.ttsChecked = true
-        return
-      }
-      if (root.ttsCandidateIndex + 1 < root.ttsCandidates.length) {
-        root.ttsCandidateIndex++
-        Qt.callLater(function() {
-          ttsDetectProc.command = [root.ttsCandidates[root.ttsCandidateIndex], "--version"]
-          ttsDetectProc.running = true
-        })
-      } else {
-        root.ttsChecked = true
-        root.showNarrationUnavailable()
-      }
-    }
-  }
-
-  Process {
     id: chapterProc
     running: false
     stdout: StdioCollector {
@@ -1780,15 +1283,15 @@ Panel {
       if (root.activeChapterRequest !== root.chapterRequestGeneration) return
       if (exitCode !== 0) {
         root.readerLoading = false
-        root.narrationStatus = "Could not load that chapter"
-        root.narrationMode = ""
+        narration.narrationStatus = "Could not load that chapter"
+        narration.narrationMode = ""
         return
       }
       var queue = root.queueFromOutput(chapterOutput.text)
       if (queue.length === 0) {
         root.readerLoading = false
-        root.narrationStatus = "No verses found in that chapter"
-        root.narrationMode = ""
+        narration.narrationStatus = "No verses found in that chapter"
+        narration.narrationMode = ""
         return
       }
       var chapterLabel = root.readerChapterLabel
@@ -1809,110 +1312,14 @@ Panel {
       root.readerLoading = false
       if (root.chapterLoadPurpose === "reader") {
         root.chapterLoadPurpose = ""
-        root.narrationMode = ""
-        root.narrationQueue = []
-        root.narrationStatus = queue.length + " verses · " + root.readerPages.length + " pages"
+        narration.narrationMode = ""
+        narration.narrationQueue = []
+        narration.narrationStatus = queue.length + " verses · " + root.readerPages.length + " pages"
         root.recordRecent()
       } else {
         root.chapterLoadPurpose = ""
-        root.requestNarration(queue, "chapter")
+        narration.requestNarration(queue, "chapter")
       }
-    }
-  }
-
-  Process {
-    id: topSpeechProc
-    running: false
-    stdout: StdioCollector { id: topSpeechOutput; waitForEnd: true }
-    onExited: function(exitCode) {
-      var parts = String(topSpeechOutput.text).trim().split("\t")
-      var validAudio = exitCode === 0 && parts.length === 3 && parts[0] === "AUDIO"
-      var current = resultModel.count > 0 ? resultModel.get(0) : null
-      if (!current || current.reference !== root.topSpeechReference || current.verse !== root.topSpeechVerse) {
-        if (validAudio) Quickshell.execDetached([root.scriptPath, "speech-cleanup", parts[1]])
-        root.topSpeechReference = ""
-        root.topSpeechVerse = ""
-        Qt.callLater(function() { root.preloadTopSpeech() })
-        return
-      }
-      if (!validAudio) return
-      root.topSpeechPath = parts[1]
-      root.topSpeechDurationMs = Math.max(700, Number(parts[2]) || 700)
-    }
-  }
-
-  Process {
-    id: speechPrepareProc
-    running: false
-    stdout: StdioCollector { id: speechPrepareOutput; waitForEnd: true }
-    onExited: function(exitCode) {
-      if (root.narrationStopPending) {
-        root.continuePendingNarration()
-        return
-      }
-      if (root.ttsProcessGeneration !== root.narrationGeneration) return
-      if (exitCode !== 0) {
-        root.narrationStatus = "Neural voice preparation failed"
-        root.narrationMode = ""
-        return
-      }
-      var parts = String(speechPrepareOutput.text).trim().split("\t")
-      if (parts.length !== 3 || parts[0] !== "AUDIO") {
-        root.narrationStatus = "Neural voice returned invalid audio"
-        root.narrationMode = ""
-        return
-      }
-      var row = root.narrationQueue[root.narrationIndex]
-      root.startPiperPlayback(parts[1], parts[2], row)
-    }
-  }
-
-  Process {
-    id: speechPrefetchProc
-    running: false
-    stdout: StdioCollector { id: speechPrefetchOutput; waitForEnd: true }
-    onExited: function(exitCode) {
-      if (exitCode !== 0
-          || root.prefetchRequestGeneration !== root.narrationGeneration
-          || root.prefetchRequestIndex === -1) {
-        root.prefetchRequestIndex = -1
-        root.prefetchRequestGeneration = 0
-        return
-      }
-      var parts = String(speechPrefetchOutput.text).trim().split("\t")
-      if (parts.length !== 3 || parts[0] !== "AUDIO") {
-        root.prefetchRequestIndex = -1
-        root.prefetchRequestGeneration = 0
-        return
-      }
-      root.prefetchedSpeechPath = parts[1]
-      root.prefetchedSpeechDurationMs = Math.max(700, Number(parts[2]) || 700)
-      root.prefetchedSpeechIndex = root.prefetchRequestIndex
-      root.prefetchRequestIndex = -1
-      root.prefetchRequestGeneration = 0
-    }
-  }
-
-  Process {
-    id: ttsProc
-    running: false
-    onExited: function(exitCode) {
-      root.narrationPaused = false
-      root.cleanupPreparedSpeech()
-      if (root.narrationStopPending) {
-        root.continuePendingNarration()
-        return
-      }
-      if (root.ttsProcessGeneration !== root.narrationGeneration) return
-      if (exitCode !== 0) {
-        root.narrationStatus = "Voice engine failed"
-        root.narrationMode = ""
-        return
-      }
-      root.calibrateNarrationTiming()
-      root.narrationIndex++
-      if (root.narrationIndex >= root.narrationQueue.length) narrationCompleteTimer.restart()
-      Qt.callLater(function() { root.speakNext(root.narrationGeneration) })
     }
   }
 
@@ -1976,7 +1383,7 @@ Panel {
         if (!root.readerMode) {
           if ((text === "o" || text === "O") && resultModel.count > 0) root.openReader(root.selectedIndex)
           else if (text === "r" || text === "R") root.readVerse(root.selectedIndex)
-          else if (text === " ") root.toggleNarrationPause()
+          else if (text === " ") narration.toggleNarrationPause()
           return
         }
         if (text === "b" || text === "B") root.readerLibraryOpen = !root.readerLibraryOpen
@@ -2208,7 +1615,7 @@ Panel {
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
                       root.preferredVoice = parent.modelData.value
-                      root.cleanupTopSpeech(); root.preloadTopSpeech(); root.scheduleReaderStateSave()
+                      narration.cleanupTopSpeech(); narration.preloadTopSpeech(); root.scheduleReaderStateSave()
                     }
                   }
                 }
@@ -2233,7 +1640,7 @@ Panel {
               Item { width: Math.max(0, parent.width - speedCaption.implicitWidth - Style.space(90)); height: 1 }
               Text {
                 id: speedCaption
-                text: root.narrationSpeed + "×"
+                text: narration.narrationSpeed + "×"
                 color: Color.accent
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.caption
@@ -2251,22 +1658,22 @@ Panel {
                   width: (speedRow.width - speedRow.spacing * 2) / 3
                   height: Style.space(28)
                   radius: Style.cornerRadius
-                  color: root.narrationSpeed === modelData
+                  color: narration.narrationSpeed === modelData
                     ? Style.hoverFillFor(root.popupForeground, Color.accent)
                     : "transparent"
                   border.width: 1
-                  border.color: root.narrationSpeed === modelData ? Color.accent : Color.popups.border
+                  border.color: narration.narrationSpeed === modelData ? Color.accent : Color.popups.border
                   Text {
                     anchors.centerIn: parent
                     text: parent.modelData + "×"
-                    color: root.narrationSpeed === parent.modelData ? Color.accent : root.popupForeground
+                    color: narration.narrationSpeed === parent.modelData ? Color.accent : root.popupForeground
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.caption
                   }
                   MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: root.setNarrationSpeed(parent.modelData)
+                    onClicked: narration.setNarrationSpeed(parent.modelData)
                   }
                 }
               }
@@ -2825,7 +2232,7 @@ Panel {
                   width: parent.width
                   text: root.readerLoading
                     ? "Opening chapter…"
-                    : root.narrationMode !== ""
+                    : narration.narrationMode !== ""
                       ? "Reading along"
                       : "Click a verse to focus"
                   textFormat: Text.PlainText
@@ -3080,12 +2487,12 @@ Panel {
                         Flow {
                           id: readerWordFlow
                           width: parent.width
-                          visible: parent.parent.focused && root.narrationMode !== "" && root.narrationWords.length > 0
+                          visible: parent.parent.focused && narration.narrationMode !== "" && narration.narrationWords.length > 0
                           spacing: Style.spacing.xs
                           height: childrenRect.height
 
                           Repeater {
-                            model: readerWordFlow.visible ? root.narrationWords : []
+                            model: readerWordFlow.visible ? narration.narrationWords : []
 
                             delegate: Rectangle {
                               required property string modelData
@@ -3093,17 +2500,17 @@ Panel {
                               width: readerWordLabel.implicitWidth + Style.space(6)
                               height: readerWordLabel.implicitHeight + Style.space(4)
                               radius: Style.space(2)
-                              color: index === root.narrationWordIndex ? Color.accent : "transparent"
+                              color: index === narration.narrationWordIndex ? Color.accent : "transparent"
 
                               Text {
                                 id: readerWordLabel
                                 anchors.centerIn: parent
                                 text: parent.modelData
                                 textFormat: Text.PlainText
-                                color: index === root.narrationWordIndex ? Color.popups.background : root.popupForeground
+                                color: index === narration.narrationWordIndex ? Color.popups.background : root.popupForeground
                                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                                 font.pixelSize: Style.font.body
-                                font.bold: index === root.narrationWordIndex
+                                font.bold: index === narration.narrationWordIndex
                               }
                             }
                           }
@@ -3468,7 +2875,7 @@ Panel {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.stopNarration()
+                  onClicked: narration.stopNarration()
                 }
               }
             }
@@ -3518,7 +2925,7 @@ Panel {
         BorderSurface {
           id: voiceSetupCard
           width: parent.width
-          visible: root.ttsChecked && !root.ttsAvailable
+          visible: narration.ttsChecked && !root.ttsAvailable
           height: visible ? voiceSetupRow.implicitHeight + Style.spacing.sm * 2 : 0
           radius: Style.cornerRadius
           color: Style.normalFillFor(root.popupForeground, Color.accent)
@@ -3579,7 +2986,7 @@ Panel {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.installVoiceEngine()
+                onClicked: narration.installVoiceEngine()
               }
               PanelToolTip {
                 visible: voiceInstallMouse.containsMouse
@@ -3609,7 +3016,7 @@ Panel {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.detectTts()
+                onClicked: narration.detectTts()
               }
             }
           }
@@ -3812,7 +3219,7 @@ Panel {
               width: parent.width - Style.space(8)
               horizontalAlignment: Text.AlignHCenter
               elide: Text.ElideRight
-              text: root.selectedIndex === 0 && topSpeechProc.running ? "Preparing…"
+              text: root.selectedIndex === 0 && narration.topSpeechProc.running ? "Preparing…"
                 : root.selectedIndex === 0 && root.topSpeechReady ? "Read"
                 : "Read"
               textFormat: Text.PlainText
@@ -3920,7 +3327,7 @@ Panel {
               anchors.fill: parent
               hoverEnabled: true
               cursorShape: Qt.PointingHandCursor
-              onClicked: root.stopNarration()
+              onClicked: narration.stopNarration()
             }
           }
         }
@@ -3928,9 +3335,9 @@ Panel {
         Text {
           id: narrationStatusLabel
           width: parent.width
-          visible: !root.readerMode && root.narrationStatus !== "" && !root.readAlongVisible
+          visible: !root.readerMode && narration.narrationStatus !== "" && !root.readAlongVisible
           height: visible ? implicitHeight : 0
-          text: root.narrationStatus
+          text: narration.narrationStatus
           textFormat: Text.PlainText
           color: root.ttsAvailable ? root.popupForeground : Color.urgent
           opacity: 0.64
@@ -3979,7 +3386,7 @@ Panel {
 
               Text {
                 id: readAlongState
-                text: root.narrationStatus
+                text: narration.narrationStatus
                 textFormat: Text.PlainText
                 color: root.popupForeground
                 opacity: 0.66
@@ -4005,10 +3412,10 @@ Panel {
 
             Text {
               width: parent.width
-              visible: root.narrationRowAt(-1) !== null
-              text: root.narrationRowAt(-1) === null
+              visible: narration.narrationRowAt(-1) !== null
+              text: narration.narrationRowAt(-1) === null
                 ? ""
-                : root.narrationRowAt(-1).reference + "  " + root.narrationRowAt(-1).verse
+                : narration.narrationRowAt(-1).reference + "  " + narration.narrationRowAt(-1).verse
               textFormat: Text.PlainText
               color: root.popupForeground
               opacity: 0.38
@@ -4019,7 +3426,7 @@ Panel {
 
             Text {
               width: parent.width
-              text: root.narrationRowAt(0) === null ? "" : root.narrationRowAt(0).reference
+              text: narration.narrationRowAt(0) === null ? "" : narration.narrationRowAt(0).reference
               textFormat: Text.PlainText
               color: Color.accent
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -4034,7 +3441,7 @@ Panel {
               height: childrenRect.height
 
               Repeater {
-                model: root.narrationWords
+                model: narration.narrationWords
 
                 delegate: Rectangle {
                   required property string modelData
@@ -4042,7 +3449,7 @@ Panel {
                   width: wordLabel.implicitWidth + Style.space(6)
                   height: wordLabel.implicitHeight + Style.space(4)
                   radius: Style.space(2)
-                  color: index === root.narrationWordIndex && root.narrationMode !== ""
+                  color: index === narration.narrationWordIndex && narration.narrationMode !== ""
                     ? Color.accent
                     : "transparent"
 
@@ -4051,12 +3458,12 @@ Panel {
                     anchors.centerIn: parent
                     text: parent.modelData
                     textFormat: Text.PlainText
-                    color: index === root.narrationWordIndex && root.narrationMode !== ""
+                    color: index === narration.narrationWordIndex && narration.narrationMode !== ""
                       ? Color.popups.background
                       : root.popupForeground
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.body
-                    font.bold: index === root.narrationWordIndex && root.narrationMode !== ""
+                    font.bold: index === narration.narrationWordIndex && narration.narrationMode !== ""
                   }
                 }
               }
@@ -4064,10 +3471,10 @@ Panel {
 
             Text {
               width: parent.width
-              visible: root.narrationRowAt(1) !== null
-              text: root.narrationRowAt(1) === null
+              visible: narration.narrationRowAt(1) !== null
+              text: narration.narrationRowAt(1) === null
                 ? ""
-                : root.narrationRowAt(1).reference + "  " + root.narrationRowAt(1).verse
+                : narration.narrationRowAt(1).reference + "  " + narration.narrationRowAt(1).verse
               textFormat: Text.PlainText
               color: root.popupForeground
               opacity: 0.38
@@ -4082,7 +3489,7 @@ Panel {
 
               Rectangle {
                 id: previousReadButton
-                enabled: root.narrationMode !== "" && root.narrationIndex > 0
+                enabled: narration.narrationMode !== "" && narration.narrationIndex > 0
                 width: previousReadLabel.implicitWidth + Style.space(20)
                 height: Style.space(26)
                 radius: Style.cornerRadius
@@ -4110,13 +3517,13 @@ Panel {
                   enabled: parent.enabled
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.skipNarration(-1)
+                  onClicked: narration.skipNarration(-1)
                 }
               }
 
               Rectangle {
                 id: nextReadButton
-                enabled: root.narrationMode !== "" && root.narrationIndex < root.narrationQueue.length - 1
+                enabled: narration.narrationMode !== "" && narration.narrationIndex < narration.narrationQueue.length - 1
                 width: nextReadLabel.implicitWidth + Style.space(20)
                 height: Style.space(26)
                 radius: Style.cornerRadius
@@ -4144,7 +3551,7 @@ Panel {
                   enabled: parent.enabled
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.skipNarration(1)
+                  onClicked: narration.skipNarration(1)
                 }
               }
 
@@ -4181,7 +3588,7 @@ Panel {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.stopNarration()
+                  onClicked: narration.stopNarration()
                 }
               }
             }
