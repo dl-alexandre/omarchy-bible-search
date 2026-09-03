@@ -15,6 +15,7 @@ Panel {
 
   property var anchorItem: null
   property var hostWidget: null
+  property alias resultModel: resultModel
   property string query: ""
   property bool dailyView: false
   property string statusText: "Search by word, phrase, or reference."
@@ -1439,8 +1440,8 @@ Panel {
         SettingsView {
           id: settingsPanel
           panel: root
-          narration: narration
-          readerState: readerState
+          narration: root.narration
+          readerState: root.readerState
         }
 
         Item {
