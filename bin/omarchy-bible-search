@@ -330,7 +330,12 @@ search_corpus() {
         matches="$(awk -v code="$code" -v chapter="$chapter" -v start="$requested_verse" -v end="$requested_end" '
           $1 == code {
             split($2, location, ":")
-            if (location[1] == chapter && location[2] + 0 >= start + 0 && location[2] + 0 <= end + 0) print $0
+            if (location[1] != chapter) next
+            if (end != start) {
+              if (location[2] + 0 >= start + 0 && location[2] + 0 <= end + 0) print $0
+            } else if (index(location[2] "", start "") == 1) {
+              print $0
+            }
           }
         ' "$reference_file" | head -n 80 || true)"
       else
