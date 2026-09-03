@@ -476,6 +476,39 @@ voice_status() {
   fi
 }
 
+# Cap the persistent speech cache at 200 files. Each synthesized WAV is a
+# short spoken verse (a few seconds to tens of seconds of speech), so 200
+# entries is comfortably small on disk while still covering realistic
+# re-reading/read-along replay patterns without ever growing unbounded.
+readonly SPEECH_CACHE_MAX_FILES=200
+
+speech_cache_key() {
+  local text="$1" speed="$2"
+  printf '%s\x1e%s' "$text" "$speed" | sha256sum | cut -d' ' -f1
+}
+
+prune_speech_cache() {
+  local speech_cache_dir="$1"
+  local -a entries=()
+  local count=0 entry=""
+  # List real cache entries (skip in-progress .tmp.* files) oldest-mtime
+  # first, then remove whichever are beyond the cap -- i.e. evict the
+  # least-recently-used entries first. A cache hit touches its file's
+  # mtime, so actively re-read verses stay warm and are evicted last.
+  while IFS= read -r entry; do
+    entries+=("$entry")
+  done < <(find "$speech_cache_dir" -maxdepth 1 -type f -name '*.wav' ! -name '.tmp.*' -printf '%T@ %p\n' 2>/dev/null \
+    | sort -n | cut -d' ' -f2-)
+  count="${#entries[@]}"
+  (( count > SPEECH_CACHE_MAX_FILES )) || return 0
+  local excess=$(( count - SPEECH_CACHE_MAX_FILES ))
+  local i=0
+  while (( i < excess )); do
+    rm -f -- "${entries[$i]}"
+    (( i += 1 ))
+  done
+}
+
 prepare_speech() {
   local text="${1:-}"
   local speed="${2:-1}"
@@ -487,27 +520,44 @@ prepare_speech() {
   [[ -x "$PIPER_BIN" && -s "$PIPER_MODEL" && -s "$PIPER_CONFIG" ]] || die "Piper neural voice is not ready"
   command -v ffprobe >/dev/null 2>&1 || die "ffprobe is required for neural voice timing"
 
-  mkdir -p -- "$CACHE_ROOT"
-  local speech_file="" duration_ms=""
-  speech_file="$(mktemp "$CACHE_ROOT/speech.XXXXXX.wav")"
-  trap 'rm -f -- "${speech_file:-}"' EXIT INT TERM
+  local speech_cache_dir="$CACHE_ROOT/speech-cache"
+  mkdir -p -- "$speech_cache_dir"
+  local cache_key="" speech_file="" duration_ms=""
+  cache_key="$(speech_cache_key "$text" "$speed")"
+  speech_file="$speech_cache_dir/$cache_key.wav"
+
+  if [[ -s "$speech_file" ]]; then
+    touch -- "$speech_file" 2>/dev/null || true
+    duration_ms="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$speech_file" \
+      | awk '{ printf "%d", ($1 * 1000) + 0.5 }')"
+    [[ "$duration_ms" =~ ^[0-9]+$ ]] || die "could not measure generated speech"
+    printf 'AUDIO\t%s\t%s\n' "$speech_file" "$duration_ms"
+    return 0
+  fi
+
+  local speech_tmp=""
+  speech_tmp="$(mktemp "$speech_cache_dir/.tmp.XXXXXX")"
+  trap 'rm -f -- "${speech_tmp:-}"' EXIT INT TERM
   printf '%s\n' "$text" | "$PIPER_BIN" \
     --model "$PIPER_MODEL" \
     --config "$PIPER_CONFIG" \
-    --output-file "$speech_file" \
+    --output-file "$speech_tmp" \
     --length-scale "$length_scale" \
     --sentence-silence 0.35 \
     --volume 1.05
-  duration_ms="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$speech_file" \
+  duration_ms="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$speech_tmp" \
     | awk '{ printf "%d", ($1 * 1000) + 0.5 }')"
   [[ "$duration_ms" =~ ^[0-9]+$ ]] || die "could not measure generated speech"
+  mv -f -- "$speech_tmp" "$speech_file"
   trap - EXIT INT TERM
+  prune_speech_cache "$speech_cache_dir"
   printf 'AUDIO\t%s\t%s\n' "$speech_file" "$duration_ms"
 }
 
 cleanup_speech_file() {
   local speech_file="${1:-}"
   case "$speech_file" in
+    "$CACHE_ROOT"/speech-cache/*) return 0 ;;
     "$CACHE_ROOT"/speech.*.wav) rm -f -- "$speech_file" ;;
     *) die "refusing to remove a path outside the speech cache" ;;
   esac
