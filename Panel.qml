@@ -33,53 +33,29 @@ Panel {
   property bool settingsOpen: false
   property int chapterRequestGeneration: 0
   property int activeChapterRequest: 0
-  property bool readerMode: false
-  property bool readerLoading: false
-  property string readerChapterLabel: ""
-  property var readerChapterQueue: []
-  property var readerPages: []
-  property int readerPageIndex: 0
-  property int readerSelectedVerseIndex: 0
   property string chapterLoadPurpose: ""
-  property bool readerTurning: false
-  property int readerTurnTargetPage: 0
-  property int readerTurnDirection: 1
-  property real readerTurnAngle: 0
-  property real readerTurnProgress: 0
-  property bool readerDragging: false
-  property bool readerDragMoved: false
-  property bool readerDragWasActive: false
-  property bool readerTurnCrossesChapter: false
-  property real readerDragStartX: 0
-  property int readerTurnApproachDuration: 340
-  property int readerTurnSettleDuration: 420
-  property int readerTurnCancelDuration: 220
-  property real readerFolioPulse: 0
   property bool readerLibraryOpen: false
   property string readerLibraryTab: "books"
   property string readerBookFilter: ""
   property string readerCatalogBook: "Genesis"
   property int readerCatalogChapterCount: 50
   property bool catalogLoaded: false
-  property string readerPendingReference: ""
-  property int readerRestorePage: -1
-  property int readerRestoreVerse: -1
   property bool readerStateReady: false
   property bool readerStateLoading: true
   property bool readerStateHydrated: false
   property var readerSavedPosition: null
   property bool reduceMotion: false
-  property bool readerPaginated: true
-  property int readerChromeIndex: -1
   property int searchChromeIndex: -1
   property string readerLibraryFocus: "books"
   property int readerBookCursor: 0
   property int readerChapterCursor: 0
   property int readerListCursor: 0
-  property string readerActionFeedback: ""
   property var topicSuggestions: ["faith", "comfort", "wisdom", "love"]
   property int topicSuggestionOffset: -1
   readonly property NarrationController narration: NarrationController {
+    panel: root
+  }
+  readonly property ReaderState readerState: ReaderState {
     panel: root
   }
 
@@ -99,16 +75,6 @@ Panel {
       : Math.min(1, (narration.narrationIndex + (narration.narrationMode !== ""
       ? (narration.narrationWordIndex + 1) / Math.max(1, narration.narrationWords.length)
       : 1)) / narration.narrationQueue.length)
-  readonly property bool readerHasPages: root.readerPages.length > 0
-  readonly property var currentReaderPage: root.readerHasPages
-    ? root.readerPages[Math.max(0, Math.min(root.readerPageIndex, root.readerPages.length - 1))]
-    : null
-  readonly property var readerTurnPage: root.readerHasPages
-    && root.readerTurnTargetPage >= 0
-    && root.readerTurnTargetPage < root.readerPages.length
-    ? root.readerPages[root.readerTurnTargetPage]
-    : null
-  readonly property int readerFocusVerseIndex: root.readerSelectedVerseIndex
   readonly property string readerStatePath: {
     var dataHome = Quickshell.env("XDG_DATA_HOME")
     if (dataHome === "") dataHome = Quickshell.env("HOME") + "/.local/share"
@@ -125,7 +91,7 @@ Panel {
 
   function focusReaderKeyboard() {
     Qt.callLater(function() {
-      if (root.opened && root.readerMode && keyCatcher) keyCatcher.forceActiveFocus()
+      if (root.opened && readerState.readerMode && keyCatcher) keyCatcher.forceActiveFocus()
     })
   }
 
@@ -141,7 +107,7 @@ Panel {
       searchTimer.restart()
     }
     Qt.callLater(function() {
-      if (root.readerMode) keyCatcher.forceActiveFocus()
+      if (readerState.readerMode) keyCatcher.forceActiveFocus()
       else {
         root.searchChromeIndex = -1
         searchField.forceActiveFocus()
@@ -209,7 +175,7 @@ Panel {
   }
 
   function showSearch() {
-    root.readerMode = false
+    readerState.readerMode = false
     root.readerLibraryOpen = false
     Qt.callLater(function() { searchField.forceActiveFocus() })
   }
@@ -342,7 +308,7 @@ Panel {
 
     narration.stopNarration()
     root.chapterLoadPurpose = "narration"
-    root.readerChapterLabel = match[1] + " " + match[2]
+    readerState.readerChapterLabel = match[1] + " " + match[2]
     root.chapterRequestGeneration++
     root.activeChapterRequest = root.chapterRequestGeneration
     narration.narrationMode = "chapter"
@@ -357,7 +323,7 @@ Panel {
   }
 
   function currentChapterParts() {
-    var match = String(root.readerChapterLabel || "").match(/^(.+)\s+([0-9]+)$/)
+    var match = String(readerState.readerChapterLabel || "").match(/^(.+)\s+([0-9]+)$/)
     return match ? { book: match[1], chapter: Number(match[2]) } : null
   }
 
@@ -386,87 +352,29 @@ Panel {
       : { book: nextBook.bookName, chapter: Number(nextBook.chapterCount) }
   }
 
-  function canMoveReader(direction) {
-    if (!root.readerHasPages) return false
-    var target = root.readerPageIndex + direction
-    if (target >= 0 && target < root.readerPages.length) return true
-    return root.adjacentChapter(direction) !== null
-  }
-
   function advanceReaderChapter(direction) {
-    if (chapterProc.running || root.readerLoading) return false
+    if (chapterProc.running || readerState.readerLoading) return false
     var next = root.adjacentChapter(direction)
     if (!next) {
-      root.readerActionFeedback = direction > 0 ? "End of the Bible" : "Beginning of the Bible"
+      readerState.readerActionFeedback = direction > 0 ? "End of the Bible" : "Beginning of the Bible"
       readerActionFeedbackTimer.restart()
       return false
     }
     root.stopReaderTurnAnimations()
-    root.readerTurning = false
-    root.readerTurnCrossesChapter = false
-    root.readerTurnAngle = 0
-    root.readerTurnProgress = 0
+    readerState.readerTurning = false
+    readerState.readerTurnCrossesChapter = false
+    readerState.readerTurnAngle = 0
+    readerState.readerTurnProgress = 0
     var landAtEnd = direction < 0
     root.openReaderChapter(next.book, next.chapter, "", landAtEnd ? 9999 : 0, landAtEnd ? 9999 : 0)
     return true
   }
 
-  function buildReaderPages(queue) {
-    var pages = []
-    var start = 0
-    var wordCount = 0
-    var wordsPerPage = 95
-
-    for (var i = 0; i < queue.length; i++) {
-      var verseWords = root.wordsFor(queue[i].verse).length
-      if (i > start && wordCount + verseWords > wordsPerPage) {
-        pages.push({ start: start, end: i - 1, verses: queue.slice(start, i) })
-        start = i
-        wordCount = 0
-      }
-      wordCount += verseWords
-    }
-    if (start < queue.length) pages.push({ start: start, end: queue.length - 1, verses: queue.slice(start) })
-    return pages
-  }
-
-  function readerPageForVerse(index) {
-    for (var i = 0; i < root.readerPages.length; i++) {
-      if (index >= root.readerPages[i].start && index <= root.readerPages[i].end) return i
-    }
-    return -1
-  }
-
-  function setReaderChapter(queue, label) {
-    root.readerChapterQueue = queue
-    root.readerPages = root.readerPaginated
-      ? root.buildReaderPages(queue)
-      : (queue.length ? [{ start: 0, end: queue.length - 1, verses: queue }] : [])
-    root.readerChapterLabel = label
-    root.readerPageIndex = 0
-    root.readerSelectedVerseIndex = 0
-  }
-
-  function applyReaderLayout(paginated) {
-    var verse = root.readerSelectedVerseIndex
-    var label = root.readerChapterLabel
-    var queue = root.readerChapterQueue
-    root.readerPaginated = paginated
-    if (queue && queue.length > 0) {
-      root.setReaderChapter(queue, label)
-      root.readerSelectedVerseIndex = Math.max(0, Math.min(verse, queue.length - 1))
-      var page = root.readerPageForVerse(root.readerSelectedVerseIndex)
-      root.readerPageIndex = Math.max(0, page)
-      Qt.callLater(root.scrollReaderVerseIntoView)
-    }
-    root.scheduleReaderStateSave()
-  }
-
   function scrollReaderVerseIntoView() {
-    if (!readerPageFlick || root.readerChapterQueue.length === 0) return
-    var n = root.readerChapterQueue.length
+    if (!readerPageFlick || readerState.readerChapterQueue.length === 0) return
+    var n = readerState.readerChapterQueue.length
     var span = Math.max(0, readerPageFlick.contentHeight - readerPageFlick.height)
-    readerPageFlick.contentY = span * (root.readerSelectedVerseIndex / Math.max(1, n - 1))
+    readerPageFlick.contentY = span * (readerState.readerSelectedVerseIndex / Math.max(1, n - 1))
   }
 
   function readerChromeItems() {
@@ -480,32 +388,32 @@ Panel {
 
   function readerChromeIs(id) {
     var items = root.readerChromeItems()
-    return root.readerChromeIndex >= 0 && root.readerChromeIndex < items.length && items[root.readerChromeIndex] === id
+    return readerState.readerChromeIndex >= 0 && readerState.readerChromeIndex < items.length && items[readerState.readerChromeIndex] === id
   }
 
   function cycleReaderChrome(direction) {
     var items = root.readerChromeItems()
     if (items.length === 0) return
-    if (root.readerChromeIndex < 0)
-      root.readerChromeIndex = direction > 0 ? 0 : items.length - 1
+    if (readerState.readerChromeIndex < 0)
+      readerState.readerChromeIndex = direction > 0 ? 0 : items.length - 1
     else
-      root.readerChromeIndex = (root.readerChromeIndex + direction + items.length) % items.length
+      readerState.readerChromeIndex = (readerState.readerChromeIndex + direction + items.length) % items.length
     root.focusReaderKeyboard()
   }
 
   function activateReaderChrome() {
     var items = root.readerChromeItems()
-    if (root.readerChromeIndex < 0 || root.readerChromeIndex >= items.length) {
+    if (readerState.readerChromeIndex < 0 || readerState.readerChromeIndex >= items.length) {
       root.readReaderSelectedVerse()
       return
     }
-    switch (items[root.readerChromeIndex]) {
+    switch (items[readerState.readerChromeIndex]) {
     case "search":
       root.showSearch()
       break
     case "library":
       root.readerLibraryOpen = !root.readerLibraryOpen
-      root.readerChromeIndex = 1
+      readerState.readerChromeIndex = 1
       break
     case "prev":
       root.moveReaderPage(-1)
@@ -610,29 +518,11 @@ Panel {
   }
 
   function cyclePanelTab(direction) {
-    if (root.readerMode && root.readerLibraryOpen) root.cycleLibraryTab(direction)
-    else if (root.readerMode) root.cycleReaderChrome(direction)
+    if (readerState.readerMode && root.readerLibraryOpen) root.cycleLibraryTab(direction)
+    else if (readerState.readerMode) root.cycleReaderChrome(direction)
     else root.cycleSearchChrome(direction)
   }
 
-  function moveReaderVerse(delta) {
-    root.readerChromeIndex = -1
-    var n = root.readerChapterQueue.length
-    if (n === 0 || root.readerLoading) return
-    var next = root.readerSelectedVerseIndex + delta
-    if (next < 0) {
-      root.advanceReaderChapter(-1)
-      return
-    }
-    if (next >= n) {
-      root.advanceReaderChapter(1)
-      return
-    }
-    root.readerSelectedVerseIndex = next
-    if (root.readerPaginated) root.syncReaderPageToVerse(next)
-    Qt.callLater(root.scrollReaderVerseIntoView)
-    root.focusReaderKeyboard()
-  }
 
   function parseCatalogOutput(raw) {
     bookCatalogModel.clear()
@@ -724,22 +614,22 @@ Panel {
 
   function openReaderChapter(book, chapter, targetReference, restorePage, restoreVerse) {
     narration.stopNarration()
-    root.readerMode = true
+    readerState.readerMode = true
     root.readerLibraryOpen = false
-    root.readerLoading = true
-    root.readerPages = []
-    root.readerChapterQueue = []
-    root.readerChapterLabel = book + " " + chapter
-    root.readerPendingReference = targetReference || ""
-    root.readerRestorePage = restorePage === undefined ? -1 : restorePage
-    root.readerRestoreVerse = restoreVerse === undefined ? -1 : restoreVerse
-    root.readerPageIndex = 0
-    root.readerSelectedVerseIndex = 0
+    readerState.readerLoading = true
+    readerState.readerPages = []
+    readerState.readerChapterQueue = []
+    readerState.readerChapterLabel = book + " " + chapter
+    readerState.readerPendingReference = targetReference || ""
+    readerState.readerRestorePage = restorePage === undefined ? -1 : restorePage
+    readerState.readerRestoreVerse = restoreVerse === undefined ? -1 : restoreVerse
+    readerState.readerPageIndex = 0
+    readerState.readerSelectedVerseIndex = 0
     root.chapterLoadPurpose = "reader"
     root.chapterRequestGeneration++
     root.activeChapterRequest = root.chapterRequestGeneration
-    narration.narrationStatus = "Opening " + root.readerChapterLabel + "…"
-    chapterProc.command = [root.scriptPath, "chapter", root.readerChapterLabel]
+    narration.narrationStatus = "Opening " + readerState.readerChapterLabel + "…"
+    chapterProc.command = [root.scriptPath, "chapter", readerState.readerChapterLabel]
     chapterProc.running = true
     root.focusReaderKeyboard()
   }
@@ -760,60 +650,60 @@ Panel {
   }
 
   function beginReaderCornerDrag(direction, startX) {
-    if (root.reduceMotion || !root.readerHasPages || root.readerTurning) return false
-    var targetPage = root.readerPageIndex + direction
-    var inChapter = targetPage >= 0 && targetPage < root.readerPages.length
+    if (root.reduceMotion || !readerState.readerHasPages || readerState.readerTurning) return false
+    var targetPage = readerState.readerPageIndex + direction
+    var inChapter = targetPage >= 0 && targetPage < readerState.readerPages.length
     if (!inChapter && !root.adjacentChapter(direction)) return false
 
     root.stopReaderTurnAnimations()
-    root.readerTurnCrossesChapter = !inChapter
-    root.readerTurnTargetPage = inChapter ? targetPage : root.readerPageIndex
-    root.readerTurnDirection = direction
-    root.readerDragging = true
-    root.readerDragMoved = false
-    root.readerDragWasActive = false
-    root.readerDragStartX = startX
-    root.readerTurnAngle = 0
-    root.readerTurnProgress = 0
-    root.readerTurning = true
+    readerState.readerTurnCrossesChapter = !inChapter
+    readerState.readerTurnTargetPage = inChapter ? targetPage : readerState.readerPageIndex
+    readerState.readerTurnDirection = direction
+    readerState.readerDragging = true
+    readerState.readerDragMoved = false
+    readerState.readerDragWasActive = false
+    readerState.readerDragStartX = startX
+    readerState.readerTurnAngle = 0
+    readerState.readerTurnProgress = 0
+    readerState.readerTurning = true
     return true
   }
 
   function updateReaderCornerDrag(currentX) {
-    if (!root.readerDragging) return
-    var distance = root.readerTurnDirection > 0
-      ? root.readerDragStartX - currentX
-      : currentX - root.readerDragStartX
+    if (!readerState.readerDragging) return
+    var distance = readerState.readerTurnDirection > 0
+      ? readerState.readerDragStartX - currentX
+      : currentX - readerState.readerDragStartX
     var travel = Math.max(1, readerPageSurface.width * 0.42)
     var ratio = Math.max(0, Math.min(1, distance / travel))
-    root.readerDragMoved = root.readerDragMoved || Math.abs(distance) > 3
-    root.readerTurnProgress = ratio * 0.5
-    root.readerTurnAngle = 0
+    readerState.readerDragMoved = readerState.readerDragMoved || Math.abs(distance) > 3
+    readerState.readerTurnProgress = ratio * 0.5
+    readerState.readerTurnAngle = 0
   }
 
   function finishReaderCornerDrag() {
-    if (!root.readerDragging) return
-    var ratio = Math.max(0, Math.min(1, root.readerTurnProgress * 2))
-    var wasDrag = root.readerDragMoved
-    root.readerDragging = false
-    root.readerDragWasActive = wasDrag
-    root.readerTurnCancelDuration = Math.max(120, Math.round(ratio * 300))
+    if (!readerState.readerDragging) return
+    var ratio = Math.max(0, Math.min(1, readerState.readerTurnProgress * 2))
+    var wasDrag = readerState.readerDragMoved
+    readerState.readerDragging = false
+    readerState.readerDragWasActive = wasDrag
+    readerState.readerTurnCancelDuration = Math.max(120, Math.round(ratio * 300))
     root.stopReaderTurnAnimations()
 
     if (!wasDrag) {
-      root.readerTurning = false
-      root.readerTurnAngle = 0
-      root.readerTurnProgress = 0
+      readerState.readerTurning = false
+      readerState.readerTurnAngle = 0
+      readerState.readerTurnProgress = 0
       return
     }
 
     if (ratio >= 0.46) {
-      if (root.readerTurnCrossesChapter) {
-        root.advanceReaderChapter(root.readerTurnDirection)
+      if (readerState.readerTurnCrossesChapter) {
+        root.advanceReaderChapter(readerState.readerTurnDirection)
         return
       }
-      root.readerTurnApproachDuration = Math.max(70, Math.round((1 - ratio) * 200))
-      root.readerTurnSettleDuration = 240
+      readerState.readerTurnApproachDuration = Math.max(70, Math.round((1 - ratio) * 200))
+      readerState.readerTurnSettleDuration = 240
       readerPageSwapTimer.restart()
       readerPageResetTimer.restart()
       readerPageTurn.restart()
@@ -823,35 +713,35 @@ Panel {
   }
 
   function turnReaderPage(targetPage) {
-    if (!root.readerHasPages || root.readerTurning) return
-    var nextPage = Math.max(0, Math.min(targetPage, root.readerPages.length - 1))
-    if (nextPage === root.readerPageIndex) return
+    if (!readerState.readerHasPages || readerState.readerTurning) return
+    var nextPage = Math.max(0, Math.min(targetPage, readerState.readerPages.length - 1))
+    if (nextPage === readerState.readerPageIndex) return
     if (root.reduceMotion) {
-      root.readerPageIndex = nextPage
-      root.readerTurning = false
-      root.readerTurnAngle = 0
-      root.readerTurnProgress = 0
+      readerState.readerPageIndex = nextPage
+      readerState.readerTurning = false
+      readerState.readerTurnAngle = 0
+      readerState.readerTurnProgress = 0
       return
     }
     root.stopReaderTurnAnimations()
-    root.readerDragWasActive = false
-    root.readerTurnTargetPage = nextPage
-    root.readerTurnDirection = nextPage > root.readerPageIndex ? 1 : -1
-    root.readerTurnApproachDuration = 200
-    root.readerTurnSettleDuration = 240
-    root.readerTurning = true
-    root.readerTurnAngle = 0
-    root.readerTurnProgress = 0
+    readerState.readerDragWasActive = false
+    readerState.readerTurnTargetPage = nextPage
+    readerState.readerTurnDirection = nextPage > readerState.readerPageIndex ? 1 : -1
+    readerState.readerTurnApproachDuration = 200
+    readerState.readerTurnSettleDuration = 240
+    readerState.readerTurning = true
+    readerState.readerTurnAngle = 0
+    readerState.readerTurnProgress = 0
     readerPageSwapTimer.restart()
     readerPageResetTimer.restart()
     readerPageTurn.restart()
   }
 
   function moveReaderPage(delta) {
-    root.readerChromeIndex = -1
+    readerState.readerChromeIndex = -1
     var direction = delta > 0 ? 1 : -1
-    var target = root.readerPageIndex + delta
-    if (target < 0 || target >= root.readerPages.length) {
+    var target = readerState.readerPageIndex + delta
+    if (target < 0 || target >= readerState.readerPages.length) {
       root.advanceReaderChapter(direction)
     } else {
       root.turnReaderPage(target)
@@ -860,8 +750,8 @@ Panel {
   }
 
   function syncReaderPageToVerse(index) {
-    var page = root.readerPageForVerse(index)
-    if (page >= 0 && page !== root.readerPageIndex) root.turnReaderPage(page)
+    var page = readerState.readerPageForVerse(index)
+    if (page >= 0 && page !== readerState.readerPageIndex) root.turnReaderPage(page)
   }
 
   function openReader(index) {
@@ -899,7 +789,7 @@ Panel {
     for (var j = 0; j < recents.length; j++) recentModel.append(recents[j])
     root.readerSavedPosition = state.position || null
     root.reduceMotion = state.reduceMotion === true
-    root.readerPaginated = state.readerPaginated !== false
+    readerState.readerPaginated = state.readerPaginated !== false
     root.dailyOnOpen = state.dailyOnOpen !== false
     root.preferredVoice = state.preferredVoice === "system" ? "system" : "male"
     narration.narrationSpeed = [0.85, 1, 1.15].indexOf(Number(state.narrationSpeed)) >= 0 ? Number(state.narrationSpeed) : 1
@@ -913,12 +803,12 @@ Panel {
   function saveReaderState() {
     if (!root.readerStateReady || root.readerStateLoading) return
     var position = root.readerSavedPosition
-    if (root.readerHasPages && root.readerChapterQueue[root.readerSelectedVerseIndex]) {
+    if (readerState.readerHasPages && readerState.readerChapterQueue[readerState.readerSelectedVerseIndex]) {
       position = {
-        chapterLabel: root.readerChapterLabel,
-        reference: root.readerChapterQueue[root.readerSelectedVerseIndex].reference,
-        pageIndex: root.readerPageIndex,
-        verseIndex: root.readerSelectedVerseIndex
+        chapterLabel: readerState.readerChapterLabel,
+        reference: readerState.readerChapterQueue[readerState.readerSelectedVerseIndex].reference,
+        pageIndex: readerState.readerPageIndex,
+        verseIndex: readerState.readerSelectedVerseIndex
       }
       root.readerSavedPosition = position
     }
@@ -928,7 +818,7 @@ Panel {
       bookmarks: root.modelRows(bookmarkModel, 30),
       recents: root.modelRows(recentModel, 12),
       reduceMotion: root.reduceMotion,
-      readerPaginated: root.readerPaginated,
+      readerPaginated: readerState.readerPaginated,
       dailyOnOpen: root.dailyOnOpen,
       preferredVoice: root.preferredVoice,
       narrationSpeed: narration.narrationSpeed,
@@ -941,7 +831,7 @@ Panel {
   }
 
   function currentReaderBookmarkIndex() {
-    var row = root.readerChapterQueue[root.readerSelectedVerseIndex]
+    var row = readerState.readerChapterQueue[readerState.readerSelectedVerseIndex]
     if (!row) return -1
     for (var i = 0; i < bookmarkModel.count; i++) {
       if (bookmarkModel.get(i).reference === row.reference) return i
@@ -950,19 +840,19 @@ Panel {
   }
 
   function toggleCurrentBookmark() {
-    var row = root.readerChapterQueue[root.readerSelectedVerseIndex]
+    var row = readerState.readerChapterQueue[readerState.readerSelectedVerseIndex]
     if (!row) return
     var existing = root.currentReaderBookmarkIndex()
     if (existing >= 0) {
       bookmarkModel.remove(existing)
-      root.readerActionFeedback = "Removed " + row.reference + " from Saved"
+      readerState.readerActionFeedback = "Removed " + row.reference + " from Saved"
     } else {
       bookmarkModel.insert(0, {
-      reference: row.reference, verse: row.verse, chapterLabel: root.readerChapterLabel,
-      pageIndex: root.readerPageIndex, verseIndex: root.readerSelectedVerseIndex,
+      reference: row.reference, verse: row.verse, chapterLabel: readerState.readerChapterLabel,
+      pageIndex: readerState.readerPageIndex, verseIndex: readerState.readerSelectedVerseIndex,
       savedAt: Date.now()
       })
-      root.readerActionFeedback = "Saved " + row.reference
+      readerState.readerActionFeedback = "Saved " + row.reference
     }
     while (bookmarkModel.count > 30) bookmarkModel.remove(bookmarkModel.count - 1)
     root.scheduleReaderStateSave()
@@ -974,20 +864,20 @@ Panel {
     var reference = bookmarkModel.get(index).reference
     bookmarkModel.remove(index)
     root.readerListCursor = Math.max(0, Math.min(root.readerListCursor, Math.max(0, bookmarkModel.count - 1)))
-    root.readerActionFeedback = "Removed " + reference + " from Saved"
+    readerState.readerActionFeedback = "Removed " + reference + " from Saved"
     root.scheduleReaderStateSave()
     readerActionFeedbackTimer.restart()
   }
 
   function recordRecent() {
-    var row = root.readerChapterQueue[root.readerSelectedVerseIndex]
+    var row = readerState.readerChapterQueue[readerState.readerSelectedVerseIndex]
     if (!row) return
     for (var i = recentModel.count - 1; i >= 0; i--) {
-      if (recentModel.get(i).chapterLabel === root.readerChapterLabel) recentModel.remove(i)
+      if (recentModel.get(i).chapterLabel === readerState.readerChapterLabel) recentModel.remove(i)
     }
     recentModel.insert(0, {
-      reference: row.reference, chapterLabel: root.readerChapterLabel,
-      pageIndex: root.readerPageIndex, verseIndex: root.readerSelectedVerseIndex,
+      reference: row.reference, chapterLabel: readerState.readerChapterLabel,
+      pageIndex: readerState.readerPageIndex, verseIndex: readerState.readerSelectedVerseIndex,
       openedAt: Date.now()
     })
     while (recentModel.count > 12) recentModel.remove(recentModel.count - 1)
@@ -995,14 +885,14 @@ Panel {
   }
 
   function readReaderSelectedVerse() {
-    if (!root.readerChapterQueue[root.readerSelectedVerseIndex]) return
-    var row = root.readerChapterQueue[root.readerSelectedVerseIndex]
+    if (!readerState.readerChapterQueue[readerState.readerSelectedVerseIndex]) return
+    var row = readerState.readerChapterQueue[readerState.readerSelectedVerseIndex]
     narration.requestNarration([{ reference: row.reference, verse: row.verse }], "verse")
   }
 
   function readReaderChapter() {
-    if (root.readerChapterQueue.length === 0) return
-    narration.requestNarration(root.readerChapterQueue, "chapter", root.readerSelectedVerseIndex)
+    if (readerState.readerChapterQueue.length === 0) return
+    narration.requestNarration(readerState.readerChapterQueue, "chapter", readerState.readerSelectedVerseIndex)
   }
 
   function copyResult(index) {
@@ -1031,16 +921,16 @@ Panel {
 
   onReaderBookFilterChanged: root.filterBookCatalog()
   onReaderModeChanged: {
-    if (root.readerMode) root.focusReaderKeyboard()
+    if (readerState.readerMode) root.focusReaderKeyboard()
     else {
       root.stopReaderTurnAnimations()
-      root.readerDragging = false
-      root.readerTurning = false
-      root.readerTurnAngle = 0
-      root.readerTurnProgress = 0
+      readerState.readerDragging = false
+      readerState.readerTurning = false
+      readerState.readerTurnAngle = 0
+      readerState.readerTurnProgress = 0
     }
   }
-  onReaderLibraryOpenChanged: if (root.readerMode) root.focusReaderKeyboard()
+  onReaderLibraryOpenChanged: if (readerState.readerMode) root.focusReaderKeyboard()
   onReaderPageIndexChanged: {
     root.scheduleReaderStateSave()
     if (readerPageFlick) readerPageFlick.contentY = 0
@@ -1060,32 +950,32 @@ Panel {
     ParallelAnimation {
       NumberAnimation {
         target: root
-        property: "readerTurnAngle"
+        property: "readerState.readerTurnAngle"
         to: 0
-        duration: root.readerTurnApproachDuration
+        duration: readerState.readerTurnApproachDuration
         easing.type: Easing.OutCubic
       }
       NumberAnimation {
         target: root
-        property: "readerTurnProgress"
+        property: "readerState.readerTurnProgress"
         to: 0.5
-        duration: root.readerTurnApproachDuration
+        duration: readerState.readerTurnApproachDuration
         easing.type: Easing.OutCubic
       }
     }
     ParallelAnimation {
       NumberAnimation {
         target: root
-        property: "readerTurnAngle"
+        property: "readerState.readerTurnAngle"
         to: 0
-        duration: root.readerTurnSettleDuration
+        duration: readerState.readerTurnSettleDuration
         easing.type: Easing.InOutCubic
       }
       NumberAnimation {
         target: root
-        property: "readerTurnProgress"
+        property: "readerState.readerTurnProgress"
         to: 1
-        duration: root.readerTurnSettleDuration
+        duration: readerState.readerTurnSettleDuration
         easing.type: Easing.InOutCubic
       }
     }
@@ -1096,26 +986,26 @@ Panel {
     ParallelAnimation {
       NumberAnimation {
         target: root
-        property: "readerTurnAngle"
+        property: "readerState.readerTurnAngle"
         to: 0
-        duration: root.readerTurnCancelDuration
+        duration: readerState.readerTurnCancelDuration
         easing.type: Easing.OutCubic
       }
       NumberAnimation {
         target: root
-        property: "readerTurnProgress"
+        property: "readerState.readerTurnProgress"
         to: 0
-        duration: root.readerTurnCancelDuration
+        duration: readerState.readerTurnCancelDuration
         easing.type: Easing.OutCubic
       }
     }
     ScriptAction {
       script: {
-        root.readerTurning = false
-        root.readerDragWasActive = false
-        root.readerTurnCrossesChapter = false
-        root.readerTurnAngle = 0
-        root.readerTurnProgress = 0
+        readerState.readerTurning = false
+        readerState.readerDragWasActive = false
+        readerState.readerTurnCrossesChapter = false
+        readerState.readerTurnAngle = 0
+        readerState.readerTurnProgress = 0
       }
     }
   }
@@ -1124,14 +1014,14 @@ Panel {
     id: readerFolioPulseAnimation
     NumberAnimation {
       target: root
-      property: "readerFolioPulse"
+      property: "readerState.readerFolioPulse"
       to: 1
       duration: 90
       easing.type: Easing.OutCubic
     }
     NumberAnimation {
       target: root
-      property: "readerFolioPulse"
+      property: "readerState.readerFolioPulse"
       to: 0
       duration: 260
       easing.type: Easing.InOutCubic
@@ -1166,7 +1056,7 @@ Panel {
     id: readerActionFeedbackTimer
     interval: 1800
     repeat: false
-    onTriggered: root.readerActionFeedback = ""
+    onTriggered: readerState.readerActionFeedback = ""
   }
 
   Timer {
@@ -1181,27 +1071,27 @@ Panel {
 
   Timer {
     id: readerPageSwapTimer
-    interval: root.readerTurnApproachDuration
+    interval: readerState.readerTurnApproachDuration
     repeat: false
     onTriggered: {
-      if (!root.readerTurning) return
-      root.readerPageIndex = root.readerTurnTargetPage
-      root.readerTurnAngle = root.readerTurnDirection > 0 ? 86 : -86
+      if (!readerState.readerTurning) return
+      readerState.readerPageIndex = readerState.readerTurnTargetPage
+      readerState.readerTurnAngle = readerState.readerTurnDirection > 0 ? 86 : -86
     }
   }
 
   Timer {
     id: readerPageResetTimer
-    interval: root.readerTurnApproachDuration + root.readerTurnSettleDuration
+    interval: readerState.readerTurnApproachDuration + readerState.readerTurnSettleDuration
     repeat: false
     onTriggered: {
-      root.readerTurning = false
-      root.readerDragging = false
-      root.readerDragWasActive = false
-      root.readerTurnAngle = 0
-      root.readerTurnProgress = 0
-      root.readerTurnApproachDuration = 340
-      root.readerTurnSettleDuration = 420
+      readerState.readerTurning = false
+      readerState.readerDragging = false
+      readerState.readerDragWasActive = false
+      readerState.readerTurnAngle = 0
+      readerState.readerTurnProgress = 0
+      readerState.readerTurnApproachDuration = 340
+      readerState.readerTurnSettleDuration = 420
     }
   }
 
@@ -1282,39 +1172,39 @@ Panel {
     onExited: function(exitCode) {
       if (root.activeChapterRequest !== root.chapterRequestGeneration) return
       if (exitCode !== 0) {
-        root.readerLoading = false
+        readerState.readerLoading = false
         narration.narrationStatus = "Could not load that chapter"
         narration.narrationMode = ""
         return
       }
       var queue = root.queueFromOutput(chapterOutput.text)
       if (queue.length === 0) {
-        root.readerLoading = false
+        readerState.readerLoading = false
         narration.narrationStatus = "No verses found in that chapter"
         narration.narrationMode = ""
         return
       }
-      var chapterLabel = root.readerChapterLabel
-      root.setReaderChapter(queue, chapterLabel)
-      var focusIndex = root.readerRestoreVerse
-      if (focusIndex < 0 && root.readerPendingReference !== "") {
+      var chapterLabel = readerState.readerChapterLabel
+      readerState.setReaderChapter(queue, chapterLabel)
+      var focusIndex = readerState.readerRestoreVerse
+      if (focusIndex < 0 && readerState.readerPendingReference !== "") {
         for (var i = 0; i < queue.length; i++) {
-          if (queue[i].reference === root.readerPendingReference) { focusIndex = i; break }
+          if (queue[i].reference === readerState.readerPendingReference) { focusIndex = i; break }
         }
       }
-      root.readerSelectedVerseIndex = Math.max(0, Math.min(focusIndex < 0 ? 0 : focusIndex, queue.length - 1))
-      var focusPage = root.readerPageForVerse(root.readerSelectedVerseIndex)
-      if (root.readerRestorePage >= 0) focusPage = Math.min(root.readerRestorePage, root.readerPages.length - 1)
-      root.readerPageIndex = Math.max(0, focusPage)
-      root.readerPendingReference = ""
-      root.readerRestorePage = -1
-      root.readerRestoreVerse = -1
-      root.readerLoading = false
+      readerState.readerSelectedVerseIndex = Math.max(0, Math.min(focusIndex < 0 ? 0 : focusIndex, queue.length - 1))
+      var focusPage = readerState.readerPageForVerse(readerState.readerSelectedVerseIndex)
+      if (readerState.readerRestorePage >= 0) focusPage = Math.min(readerState.readerRestorePage, readerState.readerPages.length - 1)
+      readerState.readerPageIndex = Math.max(0, focusPage)
+      readerState.readerPendingReference = ""
+      readerState.readerRestorePage = -1
+      readerState.readerRestoreVerse = -1
+      readerState.readerLoading = false
       if (root.chapterLoadPurpose === "reader") {
         root.chapterLoadPurpose = ""
         narration.narrationMode = ""
         narration.narrationQueue = []
-        narration.narrationStatus = queue.length + " verses · " + root.readerPages.length + " pages"
+        narration.narrationStatus = queue.length + " verses · " + readerState.readerPages.length + " pages"
         root.recordRecent()
       } else {
         root.chapterLoadPurpose = ""
@@ -1357,30 +1247,30 @@ Panel {
         else root.close()
       }
       onMoveRequested: function(dx, dy) {
-        if (root.readerMode && root.readerLibraryOpen) {
+        if (readerState.readerMode && root.readerLibraryOpen) {
           root.moveLibraryCursor(dx, dy)
-        } else if (root.readerMode) {
+        } else if (readerState.readerMode) {
           if (dx !== 0) root.moveReaderPage(dx > 0 ? 1 : -1)
-          else if (dy !== 0) root.moveReaderVerse(dy)
+          else if (dy !== 0) readerState.moveReaderVerse(dy)
         } else if (dy !== 0) {
           root.moveSelection(dy)
         }
       }
       onActivateRequested: {
-        if (root.readerMode && root.readerLibraryOpen) root.activateLibraryCursor()
-        else if (root.readerMode) root.activateReaderChrome()
+        if (readerState.readerMode && root.readerLibraryOpen) root.activateLibraryCursor()
+        else if (readerState.readerMode) root.activateReaderChrome()
         else root.activateSearchChrome()
       }
       onTabRequested: function(direction) {
         root.cyclePanelTab(direction)
       }
       onDeleteRequested: {
-        if (root.readerMode && root.readerLibraryOpen && root.readerLibraryTab === "saved") {
+        if (readerState.readerMode && root.readerLibraryOpen && root.readerLibraryTab === "saved") {
           root.removeBookmarkAt(root.readerListCursor)
         }
       }
       onTextKey: function(text) {
-        if (!root.readerMode) {
+        if (!readerState.readerMode) {
           if ((text === "o" || text === "O") && resultModel.count > 0) root.openReader(root.selectedIndex)
           else if (text === "r" || text === "R") root.readVerse(root.selectedIndex)
           else if (text === " ") narration.toggleNarrationPause()
@@ -1399,7 +1289,7 @@ Panel {
       // component, and the focus guard keeps them local to Book View.
       Keys.priority: Keys.BeforeItem
       Keys.onPressed: function(event) {
-        if (keyCatcher.blocked || !root.readerMode || root.readerLibraryOpen) return
+        if (keyCatcher.blocked || !readerState.readerMode || root.readerLibraryOpen) return
         if (event.key === Qt.Key_PageDown) {
           root.moveReaderPage(1)
           event.accepted = true
@@ -1407,14 +1297,14 @@ Panel {
           root.moveReaderPage(-1)
           event.accepted = true
         } else if (event.key === Qt.Key_Home) {
-          root.readerSelectedVerseIndex = 0
-          if (root.readerPaginated) root.turnReaderPage(0)
+          readerState.readerSelectedVerseIndex = 0
+          if (readerState.readerPaginated) root.turnReaderPage(0)
           Qt.callLater(root.scrollReaderVerseIntoView)
           root.focusReaderKeyboard()
           event.accepted = true
         } else if (event.key === Qt.Key_End) {
-          root.readerSelectedVerseIndex = Math.max(0, root.readerChapterQueue.length - 1)
-          if (root.readerPaginated) root.turnReaderPage(root.readerPages.length - 1)
+          readerState.readerSelectedVerseIndex = Math.max(0, readerState.readerChapterQueue.length - 1)
+          if (readerState.readerPaginated) root.turnReaderPage(readerState.readerPages.length - 1)
           Qt.callLater(root.scrollReaderVerseIntoView)
           root.focusReaderKeyboard()
           event.accepted = true
@@ -1539,7 +1429,7 @@ Panel {
         Column {
           id: settingsPanel
           width: parent.width
-          visible: !root.readerMode && root.settingsOpen
+          visible: !readerState.readerMode && root.settingsOpen
           height: visible ? implicitHeight : 0
           spacing: Style.spacing.md
 
@@ -1705,22 +1595,22 @@ Panel {
                   width: (layoutRow.width - layoutRow.spacing) / 2
                   height: Style.space(32)
                   radius: Style.cornerRadius
-                  color: root.readerPaginated === modelData.value
+                  color: readerState.readerPaginated === modelData.value
                     ? Style.hoverFillFor(root.popupForeground, Color.accent)
                     : Style.normalFillFor(root.popupForeground, Color.accent)
                   border.width: 1
-                  border.color: root.readerPaginated === modelData.value ? Color.accent : Color.popups.border
+                  border.color: readerState.readerPaginated === modelData.value ? Color.accent : Color.popups.border
                   Text {
                     anchors.centerIn: parent
                     text: parent.modelData.label
-                    color: root.readerPaginated === parent.modelData.value ? Color.accent : root.popupForeground
+                    color: readerState.readerPaginated === parent.modelData.value ? Color.accent : root.popupForeground
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.caption
                   }
                   MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: root.applyReaderLayout(parent.modelData.value)
+                    onClicked: readerState.applyReaderLayout(parent.modelData.value)
                   }
                 }
               }
@@ -1796,7 +1686,7 @@ Panel {
         Item {
           id: readerView
           width: parent.width
-          visible: root.readerMode
+          visible: readerState.readerMode
           height: visible ? readerColumn.implicitHeight : 0
 
           Column {
@@ -2189,16 +2079,16 @@ Panel {
 
                 Text {
                   width: parent.width
-                  text: root.readerActionFeedback !== ""
-                    ? root.readerActionFeedback
+                  text: readerState.readerActionFeedback !== ""
+                    ? readerState.readerActionFeedback
                     : root.catalogLoaded
                       ? (root.readerLibraryTab === "saved" ? "↑↓ select  ·  ENTER open  ·  X remove" : "↑↓ select  ·  ENTER open  ·  TAB sections")
                       : "Loading the offline library…"
-                  color: root.readerActionFeedback !== "" ? Color.accent : root.popupForeground
-                  opacity: root.readerActionFeedback !== "" ? 1 : 0.48
+                  color: readerState.readerActionFeedback !== "" ? Color.accent : root.popupForeground
+                  opacity: readerState.readerActionFeedback !== "" ? 1 : 0.48
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
                   font.pixelSize: Style.font.caption
-                  font.bold: root.readerActionFeedback !== ""
+                  font.bold: readerState.readerActionFeedback !== ""
                   wrapMode: Text.WordWrap
                 }
               }
@@ -2219,7 +2109,7 @@ Panel {
 
                 Text {
                   width: parent.width
-                  text: root.readerChapterLabel
+                  text: readerState.readerChapterLabel
                   textFormat: Text.PlainText
                   color: root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -2230,7 +2120,7 @@ Panel {
 
                 Text {
                   width: parent.width
-                  text: root.readerLoading
+                  text: readerState.readerLoading
                     ? "Opening chapter…"
                     : narration.narrationMode !== ""
                       ? "Reading along"
@@ -2248,10 +2138,10 @@ Panel {
                 id: readerPageCount
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: !root.readerHasPages ? ""
-                  : root.readerPaginated
-                    ? (root.readerPageIndex + 1) + " / " + root.readerPages.length
-                    : (root.readerSelectedVerseIndex + 1) + " / " + root.readerChapterQueue.length
+                text: !readerState.readerHasPages ? ""
+                  : readerState.readerPaginated
+                    ? (readerState.readerPageIndex + 1) + " / " + readerState.readerPages.length
+                    : (readerState.readerSelectedVerseIndex + 1) + " / " + readerState.readerChapterQueue.length
                 textFormat: Text.PlainText
                 color: root.popupForeground
                 opacity: 0.5
@@ -2262,7 +2152,7 @@ Panel {
 
             Rectangle {
               id: readerPageProgressTrack
-              visible: !root.readerLibraryOpen && root.readerPaginated
+              visible: !root.readerLibraryOpen && readerState.readerPaginated
               width: parent.width
               height: Style.space(2)
               radius: height / 2
@@ -2270,8 +2160,8 @@ Panel {
 
               Rectangle {
                 id: readerPageProgress
-                width: root.readerHasPages
-                  ? parent.width * ((root.readerPageIndex + 1) / root.readerPages.length)
+                width: readerState.readerHasPages
+                  ? parent.width * ((readerState.readerPageIndex + 1) / readerState.readerPages.length)
                   : 0
                 height: parent.height
                 radius: height / 2
@@ -2309,18 +2199,18 @@ Panel {
                 anchors.fill: parent
                 z: 0
                 color: Style.hoverFillFor(root.popupForeground, Color.accent)
-                opacity: root.readerTurning ? 0.12 : 0
+                opacity: readerState.readerTurning ? 0.12 : 0
               }
 
               Rectangle {
                 id: readerSpineShadow
-                x: root.readerTurnDirection > 0 ? 0 : parent.width - width
+                x: readerState.readerTurnDirection > 0 ? 0 : parent.width - width
                 y: 0
                 z: 0
                 width: Style.space(4)
                 height: parent.height
                 color: root.popupForeground
-                opacity: root.readerTurning ? 0.06 * Math.sin(Math.PI * root.readerTurnProgress) : 0
+                opacity: readerState.readerTurning ? 0.06 * Math.sin(Math.PI * readerState.readerTurnProgress) : 0
               }
 
               Item {
@@ -2330,8 +2220,8 @@ Panel {
                 width: readerPageContent.width
                 height: Math.max(readerPageContent.height, incomingPageColumn.implicitHeight)
                 z: 1
-                visible: root.readerTurning && root.readerTurnPage !== null
-                opacity: visible ? Math.min(1, root.readerTurnProgress * 1.4) : 0
+                visible: readerState.readerTurning && readerState.readerTurnPage !== null
+                opacity: visible ? Math.min(1, readerState.readerTurnProgress * 1.4) : 0
                 clip: true
 
                 BorderSurface {
@@ -2349,7 +2239,7 @@ Panel {
                   spacing: Style.spacing.sm
 
                   Repeater {
-                    model: root.readerTurnPage ? root.readerTurnPage.verses : []
+                    model: readerState.readerTurnPage ? readerState.readerTurnPage.verses : []
 
                     delegate: Column {
                       required property var modelData
@@ -2381,8 +2271,8 @@ Panel {
 
                   Text {
                     width: parent.width
-                    text: root.readerTurnPage
-                      ? root.readerChapterLabel + "  ·  " + (root.readerTurnTargetPage + 1) : ""
+                    text: readerState.readerTurnPage
+                      ? readerState.readerChapterLabel + "  ·  " + (readerState.readerTurnTargetPage + 1) : ""
                     textFormat: Text.PlainText
                     color: root.popupForeground
                     opacity: 0.46
@@ -2399,9 +2289,9 @@ Panel {
                 width: parent.width - (Style.spacing.sm * 2)
                 height: parent.height - Style.spacing.sm * 2
                 z: 2
-                opacity: root.readerTurning ? Math.max(0.2, 1 - root.readerTurnProgress) : 1
-                x: root.readerTurning
-                  ? (root.readerTurnDirection > 0 ? -1 : 1) * root.readerTurnProgress * Style.space(36)
+                opacity: readerState.readerTurning ? Math.max(0.2, 1 - readerState.readerTurnProgress) : 1
+                x: readerState.readerTurning
+                  ? (readerState.readerTurnDirection > 0 ? -1 : 1) * readerState.readerTurnProgress * Style.space(36)
                   : 0
                 clip: true
 
@@ -2421,7 +2311,7 @@ Panel {
 
                   Text {
                     width: parent.width
-                    visible: root.readerLoading
+                    visible: readerState.readerLoading
                     text: "Opening this chapter…"
                     textFormat: Text.PlainText
                     color: root.popupForeground
@@ -2432,15 +2322,15 @@ Panel {
                   }
 
                   Repeater {
-                    model: root.currentReaderPage ? root.currentReaderPage.verses : []
+                    model: readerState.currentReaderPage ? readerState.currentReaderPage.verses : []
 
                     delegate: Item {
                       required property var modelData
                       required property int index
-                      readonly property int absoluteIndex: root.currentReaderPage
-                        ? root.currentReaderPage.start + index
+                      readonly property int absoluteIndex: readerState.currentReaderPage
+                        ? readerState.currentReaderPage.start + index
                         : -1
-                      readonly property bool focused: absoluteIndex === root.readerFocusVerseIndex
+                      readonly property bool focused: absoluteIndex === readerState.readerFocusVerseIndex
                       width: readerPageColumn.width
                       height: verseColumn.implicitHeight + Style.space(10)
 
@@ -2542,7 +2432,7 @@ Panel {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                          root.readerSelectedVerseIndex = absoluteIndex
+                          readerState.readerSelectedVerseIndex = absoluteIndex
                         }
                       }
 
@@ -2561,7 +2451,7 @@ Panel {
                 width: Style.space(22)
                 height: Style.space(22)
                 z: 3
-                opacity: readerBackCornerMouse.containsMouse || (root.readerDragging && root.readerTurnDirection < 0) ? 1 : 0.35
+                opacity: readerBackCornerMouse.containsMouse || (readerState.readerDragging && readerState.readerTurnDirection < 0) ? 1 : 0.35
                 preferredRendererType: Shape.CurveRenderer
 
                 ShapePath {
@@ -2591,19 +2481,19 @@ Panel {
                 MouseArea {
                   id: readerBackCornerMouse
                   anchors.fill: parent
-                  enabled: root.canMoveReader(-1)
+                  enabled: readerState.canMoveReader(-1)
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
                   onPressed: function(mouse) { root.beginReaderCornerDrag(-1, mouse.x) }
                   onPositionChanged: function(mouse) { root.updateReaderCornerDrag(mouse.x) }
                   onReleased: root.finishReaderCornerDrag()
                   onClicked: {
-                    if (!root.readerDragWasActive) root.moveReaderPage(-1)
+                    if (!readerState.readerDragWasActive) root.moveReaderPage(-1)
                   }
                 }
 
                 PanelToolTip {
-                  visible: readerBackCornerMouse.containsMouse && !root.readerDragging
+                  visible: readerBackCornerMouse.containsMouse && !readerState.readerDragging
                   text: "Drag to turn to the previous page"
                   fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                 }
@@ -2617,7 +2507,7 @@ Panel {
                 height: Style.space(22)
                 z: 3
                 visible: false
-                opacity: readerCornerMouse.containsMouse || (root.readerDragging && root.readerTurnDirection > 0) ? 1 : 0.35
+                opacity: readerCornerMouse.containsMouse || (readerState.readerDragging && readerState.readerTurnDirection > 0) ? 1 : 0.35
                 preferredRendererType: Shape.CurveRenderer
 
                 ShapePath {
@@ -2647,19 +2537,19 @@ Panel {
                 MouseArea {
                   id: readerCornerMouse
                   anchors.fill: parent
-                  enabled: root.canMoveReader(1)
+                  enabled: readerState.canMoveReader(1)
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
                   onPressed: function(mouse) { root.beginReaderCornerDrag(1, mouse.x) }
                   onPositionChanged: function(mouse) { root.updateReaderCornerDrag(mouse.x) }
                   onReleased: root.finishReaderCornerDrag()
                   onClicked: {
-                    if (!root.readerDragWasActive) root.moveReaderPage(1)
+                    if (!readerState.readerDragWasActive) root.moveReaderPage(1)
                   }
                 }
 
                 PanelToolTip {
-                  visible: readerCornerMouse.containsMouse && !root.readerDragging
+                  visible: readerCornerMouse.containsMouse && !readerState.readerDragging
                   text: "Drag to turn to the next page"
                   fontFamily: root.bar ? root.bar.fontFamily : Style.font.family
                 }
@@ -2680,7 +2570,7 @@ Panel {
 
               Rectangle {
                 id: readerPreviousButton
-                enabled: root.canMoveReader(-1)
+                enabled: readerState.canMoveReader(-1)
                 width: readerNavRow.actionWidth
                 height: Style.space(28)
                 radius: Style.cornerRadius
@@ -2712,7 +2602,7 @@ Panel {
 
               Rectangle {
                 id: readerNextButton
-                enabled: root.canMoveReader(1)
+                enabled: readerState.canMoveReader(1)
                 width: readerNavRow.actionWidth
                 height: Style.space(28)
                 radius: Style.cornerRadius
@@ -2752,7 +2642,7 @@ Panel {
 
               Rectangle {
                 id: readerReadVerseButton
-                enabled: root.readerHasPages
+                enabled: readerState.readerHasPages
                 width: readerActionRow.actionWidth
                 height: Style.space(28)
                 radius: Style.cornerRadius
@@ -2784,7 +2674,7 @@ Panel {
 
               Rectangle {
                 id: readerReadChapterButton
-                enabled: root.readerHasPages
+                enabled: readerState.readerHasPages
                 width: readerActionRow.actionWidth
                 height: Style.space(28)
                 radius: Style.cornerRadius
@@ -2799,7 +2689,7 @@ Panel {
                   width: parent.width - Style.space(6)
                   horizontalAlignment: Text.AlignHCenter
                   elide: Text.ElideRight
-                  text: root.readerSelectedVerseIndex > 0 ? "From here" : "Chapter"
+                  text: readerState.readerSelectedVerseIndex > 0 ? "From here" : "Chapter"
                   textFormat: Text.PlainText
                   color: root.readerChromeIs("from") ? Color.accent : root.popupForeground
                   font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -2819,7 +2709,7 @@ Panel {
 
               Rectangle {
                 id: readerBookmarkButton
-                enabled: root.readerHasPages
+                enabled: readerState.readerHasPages
                 width: readerActionRow.actionWidth
                 height: Style.space(28)
                 radius: Style.cornerRadius
@@ -2884,7 +2774,7 @@ Panel {
             Text {
               visible: !root.readerLibraryOpen
               width: parent.width
-              text: root.readerPaginated
+              text: readerState.readerPaginated
                 ? "↑↓ verse  ·  ← → page  ·  Tab buttons  ·  Enter"
                 : "↑↓ verse  ·  ← → chapter  ·  Tab buttons  ·  Enter"
               textFormat: Text.PlainText
@@ -2909,9 +2799,9 @@ Panel {
             }
 
             Text {
-              visible: !root.readerLibraryOpen && root.readerActionFeedback !== ""
+              visible: !root.readerLibraryOpen && readerState.readerActionFeedback !== ""
               width: parent.width
-              text: root.readerActionFeedback
+              text: readerState.readerActionFeedback
               textFormat: Text.PlainText
               color: Color.accent
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -3025,7 +2915,7 @@ Panel {
         TextField {
           id: searchField
           width: parent.width
-          visible: !root.readerMode && !root.settingsOpen
+          visible: !readerState.readerMode && !root.settingsOpen
           height: visible ? implicitHeight : 0
           placeholderText: "john 3:16"
           foreground: root.popupForeground
@@ -3182,7 +3072,7 @@ Panel {
         Text {
           id: statusLabel
           width: parent.width
-          visible: !root.readerMode && !root.settingsOpen && (root.query.trim() !== "" || root.dailyView)
+          visible: !readerState.readerMode && !root.settingsOpen && (root.query.trim() !== "" || root.dailyView)
           height: visible ? implicitHeight : 0
           text: root.copyFeedback !== "" ? root.copyFeedback : root.statusText
           textFormat: Text.PlainText
@@ -3196,7 +3086,7 @@ Panel {
         Row {
           id: narrationActions
           width: parent.width
-          visible: !root.readerMode && !root.settingsOpen && resultModel.count > 0
+          visible: !readerState.readerMode && !root.settingsOpen && resultModel.count > 0
           height: visible ? implicitHeight : 0
           spacing: Style.spacing.xs
           readonly property int actionCount: 3 + (root.narrationActive ? 1 : 0)
@@ -3335,7 +3225,7 @@ Panel {
         Text {
           id: narrationStatusLabel
           width: parent.width
-          visible: !root.readerMode && narration.narrationStatus !== "" && !root.readAlongVisible
+          visible: !readerState.readerMode && narration.narrationStatus !== "" && !root.readAlongVisible
           height: visible ? implicitHeight : 0
           text: narration.narrationStatus
           textFormat: Text.PlainText
@@ -3349,7 +3239,7 @@ Panel {
         Item {
           id: readAlongCard
           width: parent.width
-          visible: !root.readerMode && root.readAlongVisible
+          visible: !readerState.readerMode && root.readAlongVisible
           height: visible ? readAlongColumn.implicitHeight + (Style.spacing.sm * 2) : 0
 
           BorderSurface {
@@ -3608,7 +3498,7 @@ Panel {
         Flickable {
           id: resultList
           width: parent.width
-          visible: !root.readerMode && !root.settingsOpen && (root.query.trim() !== "" || root.dailyView)
+          visible: !readerState.readerMode && !root.settingsOpen && (root.query.trim() !== "" || root.dailyView)
           height: visible ? Math.min(Style.space(320), Math.max(Style.space(96), resultStack.implicitHeight)) : 0
           clip: true
           contentWidth: width
@@ -3717,7 +3607,7 @@ Panel {
         Flow {
           id: searchChips
           width: parent.width
-          visible: !root.readerMode && !root.settingsOpen
+          visible: !readerState.readerMode && !root.settingsOpen
           height: visible ? implicitHeight : 0
           spacing: Style.spacing.xs
           topPadding: Style.spacing.xs
