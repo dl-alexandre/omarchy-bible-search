@@ -96,7 +96,7 @@ Item {
 
             LibraryView {
               id: readerLibrary
-              panel: panel
+              panel: readerView.panel
             }
 
             Item {
