@@ -345,9 +345,9 @@ QtObject {
     }
     var row = controller.narrationQueue[controller.narrationIndex]
     if (controller.narrationMode === "chapter") {
-      var chapterIndex = panel.readerChapterQueue.indexOf(row)
-      panel.readerSelectedVerseIndex = chapterIndex >= 0 ? chapterIndex : controller.narrationIndex
-      if (panel.readerMode) panel.syncReaderPageToVerse(panel.readerSelectedVerseIndex)
+      var chapterIndex = panel.readerState.readerChapterQueue.indexOf(row)
+      panel.readerState.readerSelectedVerseIndex = chapterIndex >= 0 ? chapterIndex : controller.narrationIndex
+      if (panel.readerState.readerMode) panel.syncReaderPageToVerse(panel.readerState.readerSelectedVerseIndex)
     }
     controller.narrationWords = panel.wordsFor(row.verse)
     controller.narrationCadenceWeight()
