@@ -22,6 +22,7 @@ Panel {
   property alias recentModel: recentModel
   property alias keyCatcher: keyCatcher
   property alias dailyProc: dailyProc
+  property alias chapterProc: chapterProc
   property string query: ""
   property bool dailyView: false
   property string statusText: "Search by word, phrase, or reference."
