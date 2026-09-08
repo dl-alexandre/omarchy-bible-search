@@ -903,21 +903,25 @@ Panel {
     narration.requestNarration(readerState.readerChapterQueue, "chapter", readerState.readerSelectedVerseIndex)
   }
 
-  function copyResult(index) {
-    if (index < 0 || index >= resultModel.count) return
+  function copyVerseRow(row) {
+    if (!row) return
     if (copyProc.running) {
       root.copyFeedback = "Copy already in progress"
       root.copyFailed = true
       copyFeedbackTimer.restart()
       return
     }
-    var row = resultModel.get(index)
     var text = row.reference + " — " + row.verse
     root.copyReference = row.reference
     root.copyFeedback = "Copying " + row.reference + "…"
     root.copyFailed = false
     copyProc.command = ["wl-copy", "--", text]
     copyProc.running = true
+  }
+
+  function copyResult(index) {
+    if (index < 0 || index >= resultModel.count) return
+    root.copyVerseRow(resultModel.get(index))
   }
 
   ListModel { id: resultModel }
@@ -1235,14 +1239,14 @@ Panel {
     id: copyProc
     running: false
     onExited: function(exitCode) {
-      if (exitCode === 0) {
-        root.copyFeedback = "Copied " + root.copyReference
-        root.copyFailed = false
-      } else {
-        root.copyFeedback = "Could not copy · is wl-copy available?"
-        root.copyFailed = true
-      }
+      var message = exitCode === 0 ? ("Copied " + root.copyReference) : "Could not copy · is wl-copy available?"
+      root.copyFeedback = message
+      root.copyFailed = exitCode !== 0
       copyFeedbackTimer.restart()
+      if (readerState.readerMode) {
+        readerState.readerActionFeedback = message
+        readerActionFeedbackTimer.restart()
+      }
     }
   }
 
@@ -1300,6 +1304,8 @@ Panel {
         else if ((text === "p" || text === "P") && !root.readerLibraryOpen) root.moveReaderPage(-1)
         else if ((text === "s" || text === "S") && !root.readerLibraryOpen) root.toggleCurrentBookmark()
         else if ((text === "r" || text === "R") && root.readerSavedPosition) root.openStoredReader(root.readerSavedPosition)
+        else if ((text === "c" || text === "C") && !root.readerLibraryOpen) root.copyVerseRow(readerState.readerChapterQueue[readerState.readerSelectedVerseIndex])
+        else if ((text === "l" || text === "L") && !root.readerLibraryOpen) root.readReaderSelectedVerse()
       }
 
       // PanelKeyCatcher owns the standard arrows and Vim directions. These
