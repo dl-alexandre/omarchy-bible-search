@@ -1305,7 +1305,7 @@ Panel {
         else if ((text === "s" || text === "S") && !root.readerLibraryOpen) root.toggleCurrentBookmark()
         else if ((text === "r" || text === "R") && root.readerSavedPosition) root.openStoredReader(root.readerSavedPosition)
         else if ((text === "c" || text === "C") && !root.readerLibraryOpen) root.copyVerseRow(readerState.readerChapterQueue[readerState.readerSelectedVerseIndex])
-        else if ((text === "l" || text === "L") && !root.readerLibraryOpen) root.readReaderSelectedVerse()
+        else if ((text === "a" || text === "A") && !root.readerLibraryOpen) root.readReaderSelectedVerse()
       }
 
       // PanelKeyCatcher owns the standard arrows and Vim directions. These
