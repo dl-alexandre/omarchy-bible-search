@@ -19,6 +19,12 @@ readonly WEB_ZIP_URL="https://ebible.org/Scriptures/engwebp_vpl.zip"
 # does not authenticate the origin of the initial artifact.
 readonly WEB_ZIP_SHA256="b6f55cc787b1201b68dcfde8a1216e1a61ae6b3cc38748456cf58bdb5e95fc1c"
 readonly WEB_ZIP_MAX_BYTES=$((16 * 1024 * 1024))
+# Set once a release asset exists (see setup-gpu-ui / download_gpu_ui below).
+# Until then, download_gpu_ui refuses with a clear error instead of trying
+# an empty URL.
+readonly GPU_UI_RELEASE_URL=""
+readonly GPU_UI_SHA256=""
+readonly GPU_UI_MAX_BYTES=$((32 * 1024 * 1024))
 
 declare -A BOOK_NAMES=(
   [GEN]="Genesis" [EXO]="Exodus" [LEV]="Leviticus" [NUM]="Numbers" [DEU]="Deuteronomy"
@@ -60,6 +66,7 @@ Usage:
   omarchy-bible-search doctor
   omarchy-bible-search gpu-ui-path
   omarchy-bible-search link-ui [PATH]
+  omarchy-bible-search setup-gpu-ui
   omarchy-bible-search search QUERY
   omarchy-bible-search chapter BOOK CHAPTER
   omarchy-bible-search catalog
@@ -115,7 +122,11 @@ gpu_ui_path_cmd() {
     printf '%s\n' "$path"
     return 0
   fi
-  notify "Bible reader" "gpu-ui not found. Build the retained GPU runtime, then run: omarchy-bible-search link-ui"
+  if [[ -n "$GPU_UI_RELEASE_URL" ]]; then
+    notify "Bible reader" "gpu-ui not found. Run: omarchy-bible-search setup-gpu-ui"
+  else
+    notify "Bible reader" "gpu-ui not found. Build the retained GPU runtime, then run: omarchy-bible-search link-ui"
+  fi
   return 1
 }
 
@@ -128,6 +139,50 @@ link_ui() {
   mkdir -p -- "$(dirname -- "$dest")"
   ln -sfn -- "$(cd -- "$(dirname -- "$src")" && pwd)/$(basename -- "$src")" "$dest"
   printf 'STATUS\tlinked\t%s\n' "$dest"
+}
+
+download_gpu_ui() {
+  if find_gpu_ui >/dev/null 2>&1; then
+    printf 'gpu-ui is already available at %s\n' "$(find_gpu_ui)"
+    return 0
+  fi
+
+  [[ -n "$GPU_UI_RELEASE_URL" && -n "$GPU_UI_SHA256" ]] \
+    || die "no gpu-ui release is configured yet. Build it yourself (see README) or set GPU_UI_BIN to an existing binary."
+
+  command -v curl >/dev/null 2>&1 || die "curl is required to download gpu-ui"
+  command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required to download gpu-ui"
+  command -v stat >/dev/null 2>&1 || die "stat is required to download gpu-ui"
+
+  local dest="${XDG_BIN_HOME:-$HOME/.local/bin}/gpu-ui"
+  mkdir -p -- "$(dirname -- "$dest")"
+  local dest_part="$dest.part"
+
+  trap 'rm -f -- "$dest_part"' EXIT
+  rm -f -- "$dest_part"
+
+  printf 'Downloading gpu-ui…\n'
+  curl --fail --location --retry 3 --connect-timeout 10 --max-time 180 \
+    --max-filesize "$GPU_UI_MAX_BYTES" \
+    --output "$dest_part" "$GPU_UI_RELEASE_URL"
+
+  local size=""
+  if ! size="$(stat -c '%s' "$dest_part")"; then
+    die "could not determine the downloaded gpu-ui size"
+  fi
+  if (( size > GPU_UI_MAX_BYTES )); then
+    die "downloaded gpu-ui exceeds the ${GPU_UI_MAX_BYTES}-byte size limit"
+  fi
+
+  if ! printf '%s  %s\n' "$GPU_UI_SHA256" "$dest_part" | sha256sum --check --strict --status; then
+    die "downloaded gpu-ui failed SHA-256 verification"
+  fi
+
+  chmod +x -- "$dest_part"
+  mv -f -- "$dest_part" "$dest"
+  trap - EXIT
+
+  printf 'STATUS\tinstalled\t%s\n' "$dest"
 }
 
 doctor() {
@@ -815,6 +870,9 @@ main() {
     link-ui)
       shift
       link_ui "${1:-}"
+      ;;
+    setup-gpu-ui)
+      download_gpu_ui
       ;;
     search)
       shift
