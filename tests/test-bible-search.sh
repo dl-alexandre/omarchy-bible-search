@@ -159,6 +159,14 @@ assert_contains "$(< "$BIN")" 'sha256sum --check --strict --status'
 assert_contains "$(< "$BIN")" 'unzip -tq'
 assert_contains "$(< "$BIN")" '--max-filesize'
 assert_contains "$(< "$BIN")" "stat -c '%s'"
+assert_contains "$(< "$BIN")" 'mktemp -p "$dir" "stage.XXXXXX"'
+assert_contains "$(< "$BIN")" 'mktemp -d -p "$dir" "stage.XXXXXX"'
+if grep -Fq 'engwebp_vpl.zip.part' "$BIN"; then
+  fail 'setup still uses a predictable archive .part path'
+fi
+if grep -Fq 'books.new.$$' "$BIN"; then
+  fail 'setup still uses a predictable books.new.$$ staging directory'
+fi
 
 speed_output=""
 if speed_output="$("$BIN" prepare-speech "test" 2 2>&1)"; then
@@ -176,8 +184,12 @@ assert_contains "$long_speech_output" 'exceeds the 4000-character limit'
 setup_root="$(mktemp -d)"
 fake_path="$setup_root/fake-bin"
 fake_home="$setup_root/home"
-mkdir -p "$fake_path"
+planted="$setup_root/planted-target"
+mkdir -p "$fake_path" "$fake_home/cache"
 ln -s "$REPO_ROOT/tests/fake-curl" "$fake_path/curl"
+printf 'planted\n' > "$planted"
+ln -s "$planted" "$fake_home/cache/engwebp_vpl.zip.part"
+ln -s "$planted" "$fake_home/cache/engwebp_vpl.txt.part"
 mkdir -p "$setup_root/plugin/bin"
 cp -- "$BIN" "$setup_root/plugin/bin/omarchy-bible-search"
 
@@ -189,8 +201,11 @@ if PATH="$fake_path:$PATH" \
 fi
 
 assert_contains "$(< "$setup_root/setup.err")" 'failed SHA-256 verification'
-[[ ! -e "$fake_home/cache/engwebp_vpl.zip.part" ]] || fail 'checksum failure left an archive partial'
-[[ ! -e "$fake_home/cache/engwebp_vpl.txt.part" ]] || fail 'checksum failure left a corpus partial'
+[[ "$(< "$planted")" == $'planted' ]] || fail 'setup followed a planted cache symlink'
+[[ -L "$fake_home/cache/engwebp_vpl.zip.part" ]] || fail 'setup replaced a planted archive symlink'
+if find "$fake_home" -name 'stage.*' -print -quit | grep -q .; then
+  fail 'checksum failure left a random staging path'
+fi
 if find "$fake_home" -maxdepth 1 -type d -name 'books.new.*' -print -quit | grep -q .; then
   fail 'checksum failure left a staging directory'
 fi
