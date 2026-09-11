@@ -205,13 +205,10 @@ doctor() {
   else
     printf 'STATUS\tbooks\tmissing\n'
   fi
-  if [[ $reader == ok && $books == ok ]]; then
+  # gpu-ui is optional: Search / Daily / Copy / in-panel Book work without it.
+  if [[ $books == ok ]]; then
     printf 'STATUS\tok\n'
     return 0
-  fi
-  if [[ $reader != ok ]]; then
-    printf 'STATUS\tneed-reader\n'
-    return 1
   fi
   printf 'STATUS\tneed-books\n'
   return 1

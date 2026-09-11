@@ -1,10 +1,10 @@
 # Bible Search
 
-Offline World English Bible lookup. The bar widget searches, copies, loads today’s verse, and **reads the chapter in the panel**. **Window** (optional) opens the GPU reader (`gpu-ui --manual --book`).
+Offline World English Bible lookup. The bar widget searches, copies, loads today’s verse, and **reads the chapter in the panel**. **Window** (optional) opens a local GPU reader (`gpu-ui --manual --book`) if you have built or linked one.
 
 ## Install
 
-The plugin ships an x86-64 `bin/gpu-ui`. Search, Daily, Copy, and in-panel **Book** do not need it; **Window** does.
+Search, Daily, Copy, and in-panel **Book** do not need `gpu-ui`. **Window** does. This repository does not ship an ELF binary: marketplace verification requires reviewable source, not a committed executable.
 
 ```sh
 omarchy plugin add https://github.com/dl-alexandre/omarchy-bible-search.git --enable
@@ -12,9 +12,9 @@ omarchy plugin enable dev.alexandre.bible-search --section right
 omarchy restart shell
 ```
 
-QML does not apply until that restart. `doctor` should print `STATUS	gpu-ui	…/bin/gpu-ui`. Override with `GPU_UI_BIN` or `link-ui` if you rebuild the runtime.
+QML does not apply until that restart. `doctor` reports `STATUS	gpu-ui	missing` until you provide a reader. Override with `GPU_UI_BIN` or `link-ui` after you rebuild the runtime.
 
-The Odin source for the reader lives next to the plugin in the retained-gpu-ui tree; it is not a git repo yet. Rebuild there, then copy `build/gpu-ui` over `bin/gpu-ui` to refresh the packaged reader.
+The Odin source for the reader lives next to the plugin in the retained-gpu-ui tree; it is not a git repo yet. Rebuild there, then `omarchy-bible-search link-ui /path/to/build/gpu-ui`.
 
 ## CLI
 
