@@ -134,6 +134,9 @@ fi
 if grep -Eq -- 'id: browseButton|function browse\(' <<< "$panel_source"; then
   fail 'Browse Books is still in the widget'
 fi
+if grep -Eq -- 'id: headerTitle|id: iconBadge' <<< "$panel_source"; then
+  fail 'hidden panel header is still in Panel.qml'
+fi
 if grep -Eq -- 'browse_corpus|omarchy-bible-search browse' "$BIN"; then
   fail 'CLI still has the fff browse command'
 fi
