@@ -98,7 +98,12 @@ if [[ -e "$REPO_ROOT/bin/omarchy-bible-search-ui" ]]; then
 fi
 
 tts_override_output="$(BIBLE_TTS_BIN=/bin/true "$BIN" voice-status)"
-assert_contains "$tts_override_output" $'VOICE\t'
+assert_contains "$tts_override_output" $'VOICE\ttrue'
+if grep -Fq $'VOICE\tpiper' <<< "$tts_override_output"; then
+  fail 'BIBLE_TTS_BIN did not override piper in voice-status'
+fi
+tts_doctor_output="$(BIBLE_TTS_BIN=/bin/true "$BIN" doctor)"
+assert_contains "$tts_doctor_output" $'STATUS\tvoice\t/bin/true'
 
 daily_root="$(mktemp -d)"
 daily_first="$(BIBLE_SEARCH_HOME="$daily_root" "$BIN" daily)"
@@ -126,8 +131,11 @@ fi
 if grep -Fn -- '"bash", "-c"' "$REPO_ROOT/Panel.qml"; then
   fail 'clipboard path still crosses a shell boundary'
 fi
-if grep -Fq -- 'id: browseButton' <<< "$panel_source"; then
-  fail 'Browse Books still appears in the widget UI'
+if grep -Eq -- 'id: browseButton|function browse\(' <<< "$panel_source"; then
+  fail 'Browse Books is still in the widget'
+fi
+if grep -Eq -- 'browse_corpus|omarchy-bible-search browse' "$BIN"; then
+  fail 'CLI still has the fff browse command'
 fi
 
 close_block="$(sed -n '/function close()/,/^  }/p' "$REPO_ROOT/Panel.qml")"

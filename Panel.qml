@@ -268,11 +268,6 @@ Panel {
     if (resultModel.count > 0) copyResult(root.selectedIndex)
   }
 
-  function browse() {
-    root.close()
-    Quickshell.execDetached(["omarchy-launch-tui", root.scriptPath, "browse"])
-  }
-
   function queueFromOutput(raw) {
     var lines = String(raw || "").split("\n")
     var queue = []

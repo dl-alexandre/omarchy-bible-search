@@ -31,7 +31,6 @@ bin/omarchy-bible-search daily
 bin/omarchy-bible-search doctor
 bin/omarchy-bible-search voice-status
 bin/omarchy-bible-search read GEN 1:1
-bin/omarchy-bible-search browse
 bin/omarchy-bible-search speak "In the beginning"
 ```
 

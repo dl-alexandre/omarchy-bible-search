@@ -66,7 +66,6 @@ Usage:
   omarchy-bible-search speak TEXT
   omarchy-bible-search prepare-speech TEXT [SPEED]
   omarchy-bible-search speech-cleanup PATH
-  omarchy-bible-search browse
   omarchy-bible-search read BOOK CHAPTER:VERSE
   omarchy-bible-search random
   omarchy-bible-search daily
@@ -124,7 +123,9 @@ doctor() {
   else
     printf 'STATUS\tbooks\tmissing\n'
   fi
-  if [[ -x "$PIPER_BIN" && -s "$PIPER_MODEL" && -s "$PIPER_CONFIG" ]] && command -v paplay >/dev/null 2>&1; then
+  if [[ -n ${BIBLE_TTS_BIN:-} ]] && voice="$(resolve_tts_engine)"; then
+    printf 'STATUS\tvoice\t%s\n' "$voice"
+  elif [[ -x "$PIPER_BIN" && -s "$PIPER_MODEL" && -s "$PIPER_CONFIG" ]] && command -v paplay >/dev/null 2>&1; then
     printf 'STATUS\tvoice\tpiper\n'
   elif voice="$(resolve_tts_engine)"; then
     printf 'STATUS\tvoice\t%s\n' "$voice"
@@ -441,6 +442,14 @@ state_init() {
 
 voice_status() {
   local engine=""
+  if [[ -n ${BIBLE_TTS_BIN:-} ]]; then
+    if engine="$(resolve_tts_engine)"; then
+      printf 'VOICE\t%s\n' "$(basename -- "$engine")"
+    else
+      printf 'VOICE\tnone\n'
+    fi
+    return 0
+  fi
   if [[ -x "$PIPER_BIN" && -s "$PIPER_MODEL" && -s "$PIPER_CONFIG" ]] && command -v paplay >/dev/null 2>&1; then
     printf 'VOICE\tpiper\n'
   elif engine="$(resolve_tts_engine)"; then
@@ -612,16 +621,6 @@ read_reference() {
   else
     printf '%s\n' "$line"
   fi
-}
-
-browse_corpus() {
-  local root=""
-  require_data || return 1
-  root="$(active_book_root)"
-  command -v fff >/dev/null 2>&1 || die "fff is required for browsing; install it, then try again"
-  export FFF_CD_ON_EXIT=0
-  export EDITOR="${EDITOR:-less}"
-  fff "$root"
 }
 
 random_verse() {
@@ -815,9 +814,6 @@ main() {
     speech-cleanup)
       shift
       cleanup_speech_file "${1:-}"
-      ;;
-    browse)
-      browse_corpus
       ;;
     read)
       shift
