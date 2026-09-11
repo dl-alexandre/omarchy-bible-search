@@ -48,7 +48,7 @@ Column {
               }
               Text {
                 width: parent.width
-                text: "Install espeak-ng once; Bible text and speech remain offline."
+                text: "Uses espeak-ng, espeak, speech-dispatcher, or flite if already installed."
                 textFormat: Text.PlainText
                 color: panel.popupForeground
                 opacity: 0.52

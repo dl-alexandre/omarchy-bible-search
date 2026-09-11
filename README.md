@@ -1,10 +1,8 @@
 # Bible Search
 
-Offline World English Bible lookup. The bar widget searches, copies, loads today’s verse, and **reads the chapter in the panel**. **Window** (optional) opens a local GPU reader (`gpu-ui --manual --book`) if you have built or linked one.
+Offline World English Bible lookup. The bar widget searches, copies, loads today’s verse, and reads the chapter in the panel.
 
 ## Install
-
-Search, Daily, Copy, and in-panel **Book** do not need `gpu-ui`. **Window** does. This repository does not ship an ELF binary: marketplace verification requires reviewable source, not a committed executable.
 
 ```sh
 omarchy plugin add https://github.com/dl-alexandre/omarchy-bible-search.git --enable
@@ -12,9 +10,17 @@ omarchy plugin enable dev.alexandre.bible-search --section right
 omarchy restart shell
 ```
 
-QML does not apply until that restart. `doctor` reports `STATUS	gpu-ui	missing` until you provide a reader. Override with `GPU_UI_BIN` or `link-ui` after you rebuild the runtime.
+QML does not apply until that restart.
 
-The Odin source for the reader lives next to the plugin in the retained-gpu-ui tree; it is not a git repo yet. Rebuild there, then `omarchy-bible-search link-ui /path/to/build/gpu-ui`.
+## Voice
+
+Reading aloud stays on the machine. The panel already uses whatever local engine it finds, in this order:
+
+1. Optional Piper neural voice (plugin-local install, Settings → Neural).
+2. Whatever is already on `PATH`: `espeak-ng`, `espeak`, `spd-say` (speech-dispatcher), or `flite`. Settings → System uses this.
+3. `BIBLE_TTS_BIN` — path or command name of your own CLI. It must accept `tool -- TEXT` like espeak, unless it is `spd-say` or `flite`.
+
+There is no GPU reader and no shipped ELF.
 
 ## CLI
 
@@ -23,13 +29,13 @@ bin/omarchy-bible-search search "John 3:16"
 bin/omarchy-bible-search chapter "John 3"
 bin/omarchy-bible-search daily
 bin/omarchy-bible-search doctor
-bin/omarchy-bible-search link-ui
+bin/omarchy-bible-search voice-status
 bin/omarchy-bible-search read GEN 1:1
 bin/omarchy-bible-search browse
 bin/omarchy-bible-search speak "In the beginning"
 ```
 
-In the bar: type to search, click a result to copy, **Daily** for today’s verse, **Book** to read that chapter in the overlay (Esc returns to search). **Window** floats the GPU reader.
+In the bar: type to search, click a result to copy, **Daily** for today’s verse, **Book** to read that chapter in the overlay (Esc returns to search).
 
 Search uses ripgrep when available, otherwise `grep`. Daily is `day-of-year % verse-count`.
 

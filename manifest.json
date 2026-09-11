@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dev.alexandre.bible-search",
   "name": "Bible widget",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "author": "Alexandre",
   "license": "MIT",
   "description": "Search, copy, daily verse, and read a chapter in the bar panel.",

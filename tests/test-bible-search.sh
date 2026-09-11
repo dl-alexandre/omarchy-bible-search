@@ -84,6 +84,22 @@ rm -rf -- "$state_root"
 voice_status_output="$($BIN voice-status)"
 assert_contains "$voice_status_output" $'VOICE\t'
 
+doctor_output="$($BIN doctor)"
+assert_contains "$doctor_output" $'STATUS\tbooks\t'
+if grep -Fq 'gpu-ui' <<< "$doctor_output"; then
+  fail 'doctor still reports gpu-ui'
+fi
+if grep -Fq 'gpu-ui' "$BIN"; then
+  fail 'CLI still mentions gpu-ui'
+fi
+
+if [[ -e "$REPO_ROOT/bin/omarchy-bible-search-ui" ]]; then
+  fail 'gpu-ui wrapper bin/omarchy-bible-search-ui is still present'
+fi
+
+tts_override_output="$(BIBLE_TTS_BIN=/bin/true "$BIN" voice-status)"
+assert_contains "$tts_override_output" $'VOICE\t'
+
 daily_root="$(mktemp -d)"
 daily_first="$(BIBLE_SEARCH_HOME="$daily_root" "$BIN" daily)"
 daily_same_day="$(BIBLE_SEARCH_HOME="$daily_root" "$BIN" daily)"

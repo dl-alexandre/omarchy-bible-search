@@ -19,12 +19,6 @@ readonly WEB_ZIP_URL="https://ebible.org/Scriptures/engwebp_vpl.zip"
 # does not authenticate the origin of the initial artifact.
 readonly WEB_ZIP_SHA256="b6f55cc787b1201b68dcfde8a1216e1a61ae6b3cc38748456cf58bdb5e95fc1c"
 readonly WEB_ZIP_MAX_BYTES=$((16 * 1024 * 1024))
-# Set once a release asset exists (see setup-gpu-ui / download_gpu_ui below).
-# Until then, download_gpu_ui refuses with a clear error instead of trying
-# an empty URL.
-readonly GPU_UI_RELEASE_URL=""
-readonly GPU_UI_SHA256=""
-readonly GPU_UI_MAX_BYTES=$((32 * 1024 * 1024))
 
 declare -A BOOK_NAMES=(
   [GEN]="Genesis" [EXO]="Exodus" [LEV]="Leviticus" [NUM]="Numbers" [DEU]="Deuteronomy"
@@ -64,9 +58,6 @@ usage() {
 Usage:
   omarchy-bible-search setup
   omarchy-bible-search doctor
-  omarchy-bible-search gpu-ui-path
-  omarchy-bible-search link-ui [PATH]
-  omarchy-bible-search setup-gpu-ui
   omarchy-bible-search search QUERY
   omarchy-bible-search chapter BOOK CHAPTER
   omarchy-bible-search catalog
@@ -84,117 +75,45 @@ The default corpus is the public-domain World English Bible Protestant (WEBP).
 EOF
 }
 
-find_gpu_ui() {
-  local path=""
-  local candidates=()
-  if [[ -n ${GPU_UI_BIN:-} ]]; then
-    candidates+=("$GPU_UI_BIN")
+# Optional override. The binary must accept `tool -- TEXT` like espeak,
+# or be one of spd-say / flite (those get their usual flags).
+resolve_tts_engine() {
+  if [[ -n ${BIBLE_TTS_BIN:-} ]]; then
+    if [[ -x $BIBLE_TTS_BIN ]]; then
+      printf '%s' "$BIBLE_TTS_BIN"
+      return 0
+    fi
+    if command -v "$BIBLE_TTS_BIN" >/dev/null 2>&1; then
+      command -v "$BIBLE_TTS_BIN"
+      return 0
+    fi
   fi
-  candidates+=(
-    "$SCRIPT_ROOT/bin/gpu-ui"
-    "$HOME/.local/bin/gpu-ui"
-    "$SCRIPT_ROOT/../build-a-retained-gpu-ui-runtime/build/gpu-ui"
-  )
-  for path in "${candidates[@]}"; do
-    if [[ -x $path ]]; then
-      printf '%s' "$path"
+  local name
+  for name in espeak-ng espeak spd-say flite; do
+    if command -v "$name" >/dev/null 2>&1; then
+      printf '%s' "$name"
       return 0
     fi
   done
-  if command -v gpu-ui >/dev/null 2>&1; then
-    command -v gpu-ui
-    return 0
-  fi
   return 1
 }
 
-notify() {
-  local title="$1" body="$2"
-  printf '%s: %s\n' "$APP_NAME" "$body" >&2
-  if command -v omarchy-notification-send >/dev/null 2>&1; then
-    omarchy-notification-send "$title" "$body"
-  fi
-}
-
-gpu_ui_path_cmd() {
-  local path=""
-  if path="$(find_gpu_ui)"; then
-    printf '%s\n' "$path"
-    return 0
-  fi
-  if [[ -n "$GPU_UI_RELEASE_URL" ]]; then
-    notify "Bible reader" "gpu-ui not found. Run: omarchy-bible-search setup-gpu-ui"
-  else
-    notify "Bible reader" "gpu-ui not found. Build the retained GPU runtime, then run: omarchy-bible-search link-ui"
-  fi
-  return 1
-}
-
-link_ui() {
-  local src="${1:-}" dest="${XDG_BIN_HOME:-$HOME/.local/bin}/gpu-ui"
-  if [[ -z $src ]]; then
-    src="$(find_gpu_ui)" || die "gpu-ui not found. Set GPU_UI_BIN or pass the binary path to link-ui"
-  fi
-  [[ -x $src ]] || die "not an executable: $src"
-  mkdir -p -- "$(dirname -- "$dest")"
-  ln -sfn -- "$(cd -- "$(dirname -- "$src")" && pwd)/$(basename -- "$src")" "$dest"
-  printf 'STATUS\tlinked\t%s\n' "$dest"
-}
-
-download_gpu_ui() {
-  if find_gpu_ui >/dev/null 2>&1; then
-    printf 'gpu-ui is already available at %s\n' "$(find_gpu_ui)"
-    return 0
-  fi
-
-  [[ -n "$GPU_UI_RELEASE_URL" && -n "$GPU_UI_SHA256" ]] \
-    || die "no gpu-ui release is configured yet. Build it yourself (see README) or set GPU_UI_BIN to an existing binary."
-
-  command -v curl >/dev/null 2>&1 || die "curl is required to download gpu-ui"
-  command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required to download gpu-ui"
-  command -v stat >/dev/null 2>&1 || die "stat is required to download gpu-ui"
-
-  local dest="${XDG_BIN_HOME:-$HOME/.local/bin}/gpu-ui"
-  mkdir -p -- "$(dirname -- "$dest")"
-  local dest_part="$dest.part"
-
-  trap 'rm -f -- "$dest_part"' EXIT
-  rm -f -- "$dest_part"
-
-  printf 'Downloading gpu-ui…\n'
-  curl --fail --location --retry 3 --connect-timeout 10 --max-time 180 \
-    --max-filesize "$GPU_UI_MAX_BYTES" \
-    --output "$dest_part" "$GPU_UI_RELEASE_URL"
-
-  local size=""
-  if ! size="$(stat -c '%s' "$dest_part")"; then
-    die "could not determine the downloaded gpu-ui size"
-  fi
-  if (( size > GPU_UI_MAX_BYTES )); then
-    die "downloaded gpu-ui exceeds the ${GPU_UI_MAX_BYTES}-byte size limit"
-  fi
-
-  if ! printf '%s  %s\n' "$GPU_UI_SHA256" "$dest_part" | sha256sum --check --strict --status; then
-    die "downloaded gpu-ui failed SHA-256 verification"
-  fi
-
-  chmod +x -- "$dest_part"
-  mv -f -- "$dest_part" "$dest"
-  trap - EXIT
-
-  printf 'STATUS\tinstalled\t%s\n' "$dest"
+run_tts_engine() {
+  local engine="$1" text="$2"
+  local base
+  base="$(basename -- "$engine")"
+  case "$base" in
+    spd-say) exec "$engine" --wait -- "$text" ;;
+    flite) exec "$engine" -t "$text" ;;
+    espeak-ng|espeak) exec "$engine" -v en-us+m3 -s 135 -p 32 -a 150 -- "$text" ;;
+    *) exec "$engine" -- "$text" ;;
+  esac
 }
 
 doctor() {
-  local gpu_ui="" books="missing" copy="missing" reader="missing"
-  if gpu_ui="$(find_gpu_ui)"; then
-    reader="ok"
-    printf 'STATUS\tgpu-ui\t%s\n' "$gpu_ui"
-  else
-    printf 'STATUS\tgpu-ui\tmissing\n'
-  fi
+  local books="missing"
+  local voice=""
   if command -v wl-copy >/dev/null 2>&1; then
-    copy="ok"
     printf 'STATUS\twl-copy\tok\n'
   else
     printf 'STATUS\twl-copy\tmissing\n'
@@ -205,7 +124,13 @@ doctor() {
   else
     printf 'STATUS\tbooks\tmissing\n'
   fi
-  # gpu-ui is optional: Search / Daily / Copy / in-panel Book work without it.
+  if [[ -x "$PIPER_BIN" && -s "$PIPER_MODEL" && -s "$PIPER_CONFIG" ]] && command -v paplay >/dev/null 2>&1; then
+    printf 'STATUS\tvoice\tpiper\n'
+  elif voice="$(resolve_tts_engine)"; then
+    printf 'STATUS\tvoice\t%s\n' "$voice"
+  else
+    printf 'STATUS\tvoice\tmissing\n'
+  fi
   if [[ $books == ok ]]; then
     printf 'STATUS\tok\n'
     return 0
@@ -515,14 +440,11 @@ state_init() {
 }
 
 voice_status() {
+  local engine=""
   if [[ -x "$PIPER_BIN" && -s "$PIPER_MODEL" && -s "$PIPER_CONFIG" ]] && command -v paplay >/dev/null 2>&1; then
     printf 'VOICE\tpiper\n'
-  elif command -v espeak-ng >/dev/null 2>&1; then
-    printf 'VOICE\tespeak-ng\n'
-  elif command -v espeak >/dev/null 2>&1; then
-    printf 'VOICE\tespeak\n'
-  elif command -v spd-say >/dev/null 2>&1; then
-    printf 'VOICE\tspd-say\n'
+  elif engine="$(resolve_tts_engine)"; then
+    printf 'VOICE\t%s\n' "$(basename -- "$engine")"
   else
     printf 'VOICE\tnone\n'
   fi
@@ -617,8 +539,16 @@ cleanup_speech_file() {
 
 speak_text() {
   local text="${1:-}"
+  local engine=""
   [[ -n "$text" ]] || die "speak requires text"
   (( ${#text} <= 4000 )) || die "speech text exceeds the 4000-character limit"
+
+  if [[ -n ${BIBLE_TTS_BIN:-} ]]; then
+    if engine="$(resolve_tts_engine)"; then
+      run_tts_engine "$engine" "$text"
+    fi
+    die "BIBLE_TTS_BIN is set but is not an executable TTS command"
+  fi
 
   if [[ -x "$PIPER_BIN" && -s "$PIPER_MODEL" && -s "$PIPER_CONFIG" ]] && command -v paplay >/dev/null 2>&1; then
     mkdir -p -- "$CACHE_ROOT"
@@ -650,12 +580,8 @@ speak_text() {
     return 0
   fi
 
-  if command -v espeak-ng >/dev/null 2>&1; then
-    exec espeak-ng -v en-us+m3 -s 135 -p 32 -a 150 -- "$text"
-  elif command -v espeak >/dev/null 2>&1; then
-    exec espeak -v en-us+m3 -s 135 -p 32 -a 150 -- "$text"
-  elif command -v spd-say >/dev/null 2>&1; then
-    exec spd-say --wait -- "$text"
+  if engine="$(resolve_tts_engine)"; then
+    run_tts_engine "$engine" "$text"
   fi
   die "no supported local voice engine is available"
 }
@@ -860,16 +786,6 @@ main() {
       ;;
     doctor)
       doctor
-      ;;
-    gpu-ui-path)
-      gpu_ui_path_cmd
-      ;;
-    link-ui)
-      shift
-      link_ui "${1:-}"
-      ;;
-    setup-gpu-ui)
-      download_gpu_ui
       ;;
     search)
       shift

@@ -11,7 +11,7 @@ QtObject {
   // derived usePiper/ttsAvailable properties — goes through panel.*.
   property var panel: null
 
-  readonly property var ttsCandidates: ["espeak-ng", "espeak", "spd-say"]
+  readonly property var ttsCandidates: ["espeak-ng", "espeak", "spd-say", "flite"]
   property int ttsCandidateIndex: 0
   property bool ttsChecked: false
   property string ttsEngine: ""
@@ -59,9 +59,15 @@ QtObject {
     controller.ttsChecked = false
     controller.ttsEngine = ""
     controller.ttsCandidateIndex = 0
+    if (!controller.voiceStatusProc.running) controller.voiceStatusProc.running = true
+    var custom = Quickshell.env("BIBLE_TTS_BIN")
+    if (custom !== "") {
+      controller.ttsEngine = custom
+      controller.ttsChecked = true
+      return
+    }
     controller.ttsDetectProc.command = [controller.ttsCandidates[0], "--version"]
     controller.ttsDetectProc.running = true
-    if (!controller.voiceStatusProc.running) controller.voiceStatusProc.running = true
   }
 
   function installVoiceEngine() {
@@ -71,7 +77,7 @@ QtObject {
 
   function showNarrationUnavailable() {
     controller.narrationStatus = controller.ttsChecked
-      ? "No local voice engine found · install espeak-ng, espeak, or speech-dispatcher"
+      ? "No local voice engine found · install espeak-ng, or set BIBLE_TTS_BIN"
       : "Checking for a local voice engine…"
   }
 
@@ -390,8 +396,13 @@ QtObject {
       controller.speechPrepareProc.command = [panel.scriptPath, "prepare-speech", row.verse, String(controller.narrationSpeed)]
       controller.speechPrepareProc.running = true
       return
-    } else if (controller.ttsEngine === "spd-say") {
+    } else if (controller.ttsEngine === "spd-say" || /\/spd-say$/.test(controller.ttsEngine)) {
       controller.ttsProc.command = [controller.ttsEngine, "--wait", "--", row.verse]
+    } else if (controller.ttsEngine === "flite" || /\/flite$/.test(controller.ttsEngine)) {
+      controller.ttsProc.command = [controller.ttsEngine, "-t", row.verse]
+    } else if (controller.ttsEngine === "espeak-ng" || controller.ttsEngine === "espeak"
+        || /\/espeak-ng$/.test(controller.ttsEngine) || /\/espeak$/.test(controller.ttsEngine)) {
+      controller.ttsProc.command = [controller.ttsEngine, "-v", "en-us+m3", "-s", "135", "-p", "32", "-a", "150", "--", row.verse]
     } else {
       controller.ttsProc.command = [controller.ttsEngine, "--", row.verse]
     }

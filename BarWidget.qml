@@ -21,12 +21,6 @@ BarWidget {
     return decodeURIComponent(path)
   }
 
-  readonly property string uiPath: {
-    var path = String(Qt.resolvedUrl("bin/omarchy-bible-search-ui"))
-    if (path.indexOf("file://") === 0) path = path.substring(7)
-    return decodeURIComponent(path)
-  }
-
   function injectPanel() {
     var target = panelLoader.item
     if (!target) return
@@ -34,7 +28,6 @@ BarWidget {
     target.anchorItem = button
     target.hostWidget = root
     if ("pluginScriptPath" in target) target.pluginScriptPath = root.scriptPath
-    if ("pluginUiPath" in target) target.pluginUiPath = root.uiPath
   }
 
   function open() {
@@ -98,8 +91,7 @@ BarWidget {
         opened: root.opened,
         hasBar: !!root.bar,
         error: err,
-        scriptPath: item ? item.scriptPath : "",
-        uiPath: item ? item.uiPath : ""
+        scriptPath: item ? item.scriptPath : ""
       })
     }
 
