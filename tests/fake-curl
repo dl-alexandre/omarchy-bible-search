@@ -15,4 +15,11 @@ while (($# > 0)); do
 done
 
 [[ -n "$output" ]] || exit 2
-cp -- "${FAKE_CURL_SOURCE:?FAKE_CURL_SOURCE is required}" "$output"
+if [[ -n ${FAKE_CURL_EXIT:-} ]]; then
+  exit "$FAKE_CURL_EXIT"
+fi
+if [[ "$output" == "-" ]]; then
+  cat -- "${FAKE_CURL_SOURCE:?FAKE_CURL_SOURCE is required}"
+else
+  cp -- "${FAKE_CURL_SOURCE:?FAKE_CURL_SOURCE is required}" "$output"
+fi

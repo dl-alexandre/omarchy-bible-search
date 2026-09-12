@@ -19,6 +19,7 @@ readonly WEB_ZIP_URL="https://ebible.org/Scriptures/engwebp_vpl.zip"
 # does not authenticate the origin of the initial artifact.
 readonly WEB_ZIP_SHA256="b6f55cc787b1201b68dcfde8a1216e1a61ae6b3cc38748456cf58bdb5e95fc1c"
 readonly WEB_ZIP_MAX_BYTES=$((16 * 1024 * 1024))
+readonly WEB_CORPUS_MAX_BYTES=$((64 * 1024 * 1024))
 
 declare -A BOOK_NAMES=(
   [GEN]="Genesis" [EXO]="Exodus" [LEV]="Leviticus" [NUM]="Numbers" [DEU]="Deuteronomy"
@@ -167,200 +168,19 @@ trim_line() {
   printf '%s' "$value"
 }
 
-write_book_file() {
-  local book_file="$1"
-  local verse="$2"
-  [[ -z "$book_file" || -z "$verse" ]] && return 0
-  printf '%s\n' "$verse" >> "$book_file"
-}
-
-ensure_owned_dir() {
-  local path="$1"
-  local parent=""
-  [[ -n $path ]] || die "directory path is empty"
-  if [[ -L $path ]]; then
-    die "refusing to use a symlink directory: $path"
-  fi
-  if [[ -e $path ]]; then
-    [[ -d $path ]] || die "not a directory: $path"
-  else
-    parent="$(dirname -- "$path")"
-    if [[ ! -d $parent ]]; then
-      mkdir -p -- "$parent" || die "could not create $parent"
-    fi
-    mkdir -m 700 -- "$path" || die "could not create $path"
-  fi
-  if [[ -L $path ]]; then
-    die "refusing to use a symlink directory: $path"
-  fi
-  [[ -d $path ]] || die "not a directory: $path"
-  [[ $(stat -c '%u' "$path") == "$EUID" ]] || die "directory is not owned by the current user: $path"
-  chmod 700 -- "$path" || die "could not restrict $path"
-}
-
-assert_regular_owned_file() {
-  local path="$1"
-  [[ ! -L $path && -f $path ]] || die "staging path is not a regular file: $path"
-  [[ $(stat -c '%u' "$path") == "$EUID" ]] || die "staging file is not owned by the current user: $path"
-}
-
-stage_file_in() {
-  local dir="$1" path=""
-  ensure_owned_dir "$dir"
-  path="$(umask 077; mktemp -p "$dir" "stage.XXXXXX")" || die "could not create an exclusive staging file"
-  if [[ -L $path || ! -f $path ]]; then
-    rm -f -- "$path"
-    die "staging file was replaced: $path"
-  fi
-  if [[ $(stat -c '%u' "$path") != "$EUID" ]]; then
-    rm -f -- "$path"
-    die "staging file is not owned by the current user: $path"
-  fi
-  printf '%s' "$path"
-}
-
-stage_dir_in() {
-  local dir="$1" path=""
-  ensure_owned_dir "$dir"
-  path="$(umask 077; mktemp -d -p "$dir" "stage.XXXXXX")" || die "could not create an exclusive staging directory"
-  if [[ -L $path || ! -d $path ]]; then
-    rm -rf -- "$path"
-    die "staging directory was replaced: $path"
-  fi
-  if [[ $(stat -c '%u' "$path") != "$EUID" ]]; then
-    rm -rf -- "$path"
-    die "staging directory is not owned by the current user: $path"
-  fi
-  chmod 700 -- "$path" || die "could not restrict $path"
-  printf '%s' "$path"
-}
-
-split_corpus() {
-  local source_file="$1"
-  local target_root="$2"
-  local line code book_file current_file="" current_verse=""
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line="$(trim_line "$line")"
-    [[ -z "$line" ]] && continue
-
-    if [[ "$line" =~ ^([A-Z0-9]{3})[[:space:]]+[0-9]+:[0-9]+[[:space:]] ]]; then
-      write_book_file "$current_file" "$current_verse"
-      code="${BASH_REMATCH[1]}"
-      book="${BOOK_NAMES[$code]:-}"
-      current_file=""
-      current_verse="$line"
-      if [[ -n "$book" ]]; then
-        current_file="$target_root/$book.txt"
-      fi
-    elif [[ -n "$current_verse" ]]; then
-      current_verse="$current_verse $line"
-    fi
-  done < "$source_file"
-
-  write_book_file "$current_file" "$current_verse"
-}
-
 setup_corpus() {
   if dir_has_books "$BUNDLED_BOOK_ROOT"; then
     printf 'Bundled WEBP corpus is ready at %s\n' "$BUNDLED_BOOK_ROOT"
     return 0
   fi
 
-  command -v curl >/dev/null 2>&1 || die "curl is required for setup"
-  command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required for setup"
-  command -v stat >/dev/null 2>&1 || die "stat is required for setup"
-  command -v unzip >/dev/null 2>&1 || die "unzip is required for setup"
-
-  local old_umask=""
-  old_umask="$(umask)"
-  umask 077
-
-  ensure_owned_dir "$DATA_ROOT"
-  ensure_owned_dir "$CACHE_ROOT"
-
-  local archive="$CACHE_ROOT/engwebp_vpl.zip"
-  local vpl="$CACHE_ROOT/engwebp_vpl.txt"
-  local archive_stage="" vpl_stage="" staging="" backup=""
-
-  cleanup_setup() {
-    [[ -n ${archive_stage:-} ]] && rm -f -- "$archive_stage"
-    [[ -n ${vpl_stage:-} ]] && rm -f -- "$vpl_stage"
-    [[ -n ${staging:-} && -d $staging ]] && rm -rf -- "$staging"
-    umask "$old_umask"
-  }
-  trap cleanup_setup EXIT
-
-  archive_stage="$(stage_file_in "$CACHE_ROOT")"
-
-  printf 'Downloading the public-domain World English Bible (WEBP)…\n'
-  curl --fail --location --retry 3 --connect-timeout 10 --max-time 180 \
-    --max-filesize "$WEB_ZIP_MAX_BYTES" \
-    --output "$archive_stage" "$WEB_ZIP_URL"
-
-  assert_regular_owned_file "$archive_stage"
-
-  local archive_size=""
-  if ! archive_size="$(stat -c '%s' "$archive_stage")"; then
-    die "could not determine the downloaded WEBP archive size"
-  fi
-  if (( archive_size > WEB_ZIP_MAX_BYTES )); then
-    die "downloaded WEBP archive exceeds the ${WEB_ZIP_MAX_BYTES}-byte size limit"
-  fi
-
-  if ! printf '%s  %s\n' "$WEB_ZIP_SHA256" "$archive_stage" | sha256sum --check --strict --status; then
-    die "downloaded WEBP archive failed SHA-256 verification"
-  fi
-
-  if ! unzip -tq "$archive_stage" >/dev/null; then
-    die "downloaded WEBP archive failed ZIP integrity validation"
-  fi
-
-  local archive_listing=""
-  if ! archive_listing="$(unzip -Z1 "$archive_stage")"; then
-    die "could not inspect downloaded WEBP archive contents"
-  fi
-  if [[ "$(grep -Fxc 'engwebp_vpl.txt' <<< "$archive_listing")" -ne 1 ]]; then
-    die "downloaded WEBP archive did not contain exactly one engwebp_vpl.txt member"
-  fi
-
-  # Read one fixed member instead of extracting archive paths to disk.
-  vpl_stage="$(stage_file_in "$CACHE_ROOT")"
-  unzip -p "$archive_stage" engwebp_vpl.txt > "$vpl_stage"
-  assert_regular_owned_file "$vpl_stage"
-  [[ -s "$vpl_stage" ]] || die "downloaded WEBP archive contained an empty corpus"
-
-  if [[ -L $archive || -L $vpl ]]; then
-    die "refusing to replace a symlink cache artifact"
-  fi
-  mv -f -- "$archive_stage" "$archive"
-  archive_stage=""
-  mv -f -- "$vpl_stage" "$vpl"
-  vpl_stage=""
-  assert_regular_owned_file "$archive"
-  assert_regular_owned_file "$vpl"
-
-  staging="$(stage_dir_in "$DATA_ROOT")"
-  split_corpus "$vpl" "$staging"
-
-  if ! find "$staging" -maxdepth 1 -type f -name '*.txt' -print -quit | grep -q .; then
-    die "the downloaded corpus did not contain readable book files"
-  fi
-
-  if [[ -L $BOOK_ROOT ]]; then
-    die "refusing to replace a symlink book root"
-  fi
-  if [[ -d $BOOK_ROOT ]]; then
-    backup="$(stage_dir_in "$DATA_ROOT")"
-    mv -- "$BOOK_ROOT" "$backup/prev"
-  fi
-  mv -- "$staging" "$BOOK_ROOT"
-  staging=""
-  trap - EXIT
-  umask "$old_umask"
-
-  printf 'Installed WEBP at %s\n' "$BOOK_ROOT"
-  printf 'Source: %s\n' "$WEB_ZIP_URL"
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for secure WEBP setup"
+  python3 "$SCRIPT_ROOT/bin/omarchy-bible-search-setup.py" \
+    --data-root "$DATA_ROOT" \
+    --url "$WEB_ZIP_URL" \
+    --sha256 "$WEB_ZIP_SHA256" \
+    --max-download-bytes "$WEB_ZIP_MAX_BYTES" \
+    --max-corpus-bytes "$WEB_CORPUS_MAX_BYTES"
 }
 
 search_corpus() {
