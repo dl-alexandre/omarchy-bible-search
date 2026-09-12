@@ -46,7 +46,7 @@ Setup uses owner-checked, no-follow directory descriptors for the full transacti
 
 ## Security checks
 
-The focused test suite covers checksum, curl, ZIP-member, size-limit, symlink, writable-ancestor, archive-traversal, and staging-cleanup failures, plus a successful secure install. The plugin does not install services or use sudo.
+The focused test suite covers checksum, curl, ZIP-member, size-limit, symlink, writable-ancestor, archive-traversal, and staging-cleanup failures, plus a successful secure install. The plugin does not install services and runs entirely as the invoking user.
 
 ## Tests
 
