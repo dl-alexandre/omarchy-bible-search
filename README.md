@@ -40,18 +40,11 @@ Search uses ripgrep when available, otherwise `grep`. Daily is `day-of-year % ve
 
 ## Data
 
-Bundled public-domain WEBP in `data/books/`. `setup` only runs if that corpus is missing. It requires Python 3 and curl, caps the download at 16 MiB and the decompressed corpus at 64 MiB, accepts exactly one `engwebp_vpl.txt` ZIP member, and checks SHA-256 `b6f55cc787b1201b68dcfde8a1216e1a61ae6b3cc38748456cf58bdb5e95fc1c`.
-
-Setup uses owner-checked, no-follow directory descriptors for the full transaction, exclusive random staging names, bounded streaming, and descriptor-relative rename/cleanup. This protects against another user racing a writable ancestor or staging path. The Omarchy shell remains an unsandboxed user process: a process running as the same user, root, or a compromised curl/Python/runtime environment is outside this boundary. The pinned archive hash detects later replacement or corruption but does not authenticate the initial download’s origin.
-
-## Security checks
-
-The focused test suite covers checksum, curl, ZIP-member, size-limit, symlink, writable-ancestor, archive-traversal, and staging-cleanup failures, plus a successful secure install. The plugin does not install services and runs entirely as the invoking user.
+Bundled public-domain WEBP in `data/books/`. There is no download or installer path.
 
 ## Tests
 
 ```sh
 bash -n bin/omarchy-bible-search
-python3 -m py_compile bin/omarchy-bible-search-setup.py
 bash tests/test-bible-search.sh
 ```

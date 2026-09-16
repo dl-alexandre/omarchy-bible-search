@@ -12,14 +12,6 @@ readonly PIPER_ROOT="$DATA_ROOT/piper"
 readonly PIPER_BIN="$PIPER_ROOT/venv/bin/piper"
 readonly PIPER_MODEL="$PIPER_ROOT/voices/en_US-ryan-medium.onnx"
 readonly PIPER_CONFIG="$PIPER_MODEL.json"
-readonly WEB_ZIP_URL="https://ebible.org/Scriptures/engwebp_vpl.zip"
-# eBible does not publish an independent checksum for this archive. This is
-# the SHA-256 of the exact 4,281,529-byte artifact downloaded directly from
-# WEB_ZIP_URL on 2026-08-23. It detects later replacement or corruption, but
-# does not authenticate the origin of the initial artifact.
-readonly WEB_ZIP_SHA256="b6f55cc787b1201b68dcfde8a1216e1a61ae6b3cc38748456cf58bdb5e95fc1c"
-readonly WEB_ZIP_MAX_BYTES=$((16 * 1024 * 1024))
-readonly WEB_CORPUS_MAX_BYTES=$((64 * 1024 * 1024))
 
 declare -A BOOK_NAMES=(
   [GEN]="Genesis" [EXO]="Exodus" [LEV]="Leviticus" [NUM]="Numbers" [DEU]="Deuteronomy"
@@ -155,7 +147,7 @@ active_book_root() {
 
 require_data() {
   if [[ -z "$(active_book_root)" ]]; then
-    status_line "No Bible data is bundled or installed. Run setup to download WEBP."
+    status_line "No Bible data is bundled. Reinstall the plugin."
     return 1
   fi
 }
@@ -173,14 +165,7 @@ setup_corpus() {
     printf 'Bundled WEBP corpus is ready at %s\n' "$BUNDLED_BOOK_ROOT"
     return 0
   fi
-
-  command -v python3 >/dev/null 2>&1 || die "python3 is required for secure WEBP setup"
-  python3 "$SCRIPT_ROOT/bin/omarchy-bible-search-setup.py" \
-    --data-root "$DATA_ROOT" \
-    --url "$WEB_ZIP_URL" \
-    --sha256 "$WEB_ZIP_SHA256" \
-    --max-download-bytes "$WEB_ZIP_MAX_BYTES" \
-    --max-corpus-bytes "$WEB_CORPUS_MAX_BYTES"
+  die "no bundled WEBP corpus. Reinstall the plugin."
 }
 
 search_corpus() {
