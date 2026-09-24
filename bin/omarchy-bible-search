@@ -364,26 +364,233 @@ speech_cache_key() {
   printf '%s\x1e%s' "$text" "$speed" | sha256sum | cut -d' ' -f1
 }
 
-prune_speech_cache() {
-  local speech_cache_dir="$1"
-  local -a entries=()
-  local count=0 entry=""
-  # List real cache entries (skip in-progress .tmp.* files) oldest-mtime
-  # first, then remove whichever are beyond the cap -- i.e. evict the
-  # least-recently-used entries first. A cache hit touches its file's
-  # mtime, so actively re-read verses stay warm and are evicted last.
-  while IFS= read -r entry; do
-    entries+=("$entry")
-  done < <(find "$speech_cache_dir" -maxdepth 1 -type f -name '*.wav' ! -name '.tmp.*' -printf '%T@ %p\n' 2>/dev/null \
-    | sort -n | cut -d' ' -f2-)
-  count="${#entries[@]}"
-  (( count > SPEECH_CACHE_MAX_FILES )) || return 0
-  local excess=$(( count - SPEECH_CACHE_MAX_FILES ))
-  local i=0
-  while (( i < excess )); do
-    rm -f -- "${entries[$i]}"
-    (( i += 1 ))
-  done
+# Owner-checked O_NOFOLLOW directory walk plus exclusive descriptor-relative
+# create/linkat/unlinkat. Pathname mkdir/mv/rm on the cache is not used.
+speech_cache_ctl() {
+  command -v python3 >/dev/null 2>&1 || die "python3 is required for the speech cache"
+  CACHE_ROOT="$CACHE_ROOT" SPEECH_CACHE_MAX_FILES="$SPEECH_CACHE_MAX_FILES" python3 - "$@" <<'PY'
+import os, re, stat, sys, time
+
+cache_root = os.environ["CACHE_ROOT"]
+max_files = int(os.environ["SPEECH_CACHE_MAX_FILES"])
+uid = os.geteuid()
+NOFOLLOW = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+def die(msg):
+    print(f"omarchy-bible-search: {msg}", file=sys.stderr)
+    raise SystemExit(1)
+
+def check_dir(fd):
+    st = os.fstat(fd)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != uid:
+        die("speech cache path is not an owned directory")
+    return st
+
+def open_owned_tree(path, create):
+    if not os.path.isabs(path):
+        die("speech cache path must be absolute")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0))
+    check_dir(fd)
+    parts = [p for p in path.split("/") if p]
+    for i, name in enumerate(parts):
+        if name in (".", ".."):
+            die("refusing to traverse . or ..")
+        nxt = None
+        try:
+            nxt = os.openat(fd, name, NOFOLLOW)
+        except FileNotFoundError:
+            if not create:
+                die("speech cache directory is missing")
+            try:
+                os.mkdir(name, 0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            nxt = os.openat(fd, name, NOFOLLOW)
+        os.close(fd)
+        fd = nxt
+        check_dir(fd)
+    return fd
+
+def open_owned_file(dirfd, name, flags):
+    if "/" in name or name in (".", ".."):
+        die("refusing unsafe cache name")
+    fd = os.openat(dirfd, name, flags | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != uid:
+        os.close(fd)
+        die("speech cache file is not an owned regular file")
+    return fd, st
+
+def speech_cache_fd(create):
+    return open_owned_tree(os.path.join(cache_root, "speech-cache"), create)
+
+def cache_root_fd(create):
+    return open_owned_tree(cache_root, create)
+
+def cmd_ensure():
+    fd = speech_cache_fd(True)
+    os.close(fd)
+    print(os.path.join(cache_root, "speech-cache"))
+
+def cmd_hit(name):
+    dirfd = speech_cache_fd(True)
+    try:
+        fd, st = open_owned_file(dirfd, name, os.O_RDWR)
+    except FileNotFoundError:
+        os.close(dirfd)
+        raise SystemExit(2)
+    if st.st_size <= 0:
+        os.close(fd)
+        os.close(dirfd)
+        raise SystemExit(2)
+    os.utime(fd, None)
+    os.close(fd)
+    os.close(dirfd)
+    print(os.path.join(cache_root, "speech-cache", name))
+
+def cmd_stage():
+    dirfd = speech_cache_fd(True)
+    for _ in range(64):
+        name = f".tmp.{os.getpid()}.{time.time_ns():x}"
+        try:
+            fd = os.openat(
+                dirfd,
+                name,
+                os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+        except FileExistsError:
+            continue
+        os.close(fd)
+        os.close(dirfd)
+        print(name)
+        return
+    os.close(dirfd)
+    die("could not create an exclusive speech cache staging file")
+
+def cmd_publish(tmp_name, dest_name):
+    if not re.fullmatch(r"\.tmp\.[0-9]+\.[0-9a-f]+", tmp_name):
+        die("refusing to publish an unexpected staging name")
+    if not re.fullmatch(r"[0-9a-f]{64}\.wav", dest_name):
+        die("refusing to publish an unexpected cache name")
+    dirfd = speech_cache_fd(False)
+    tfd, tst = open_owned_file(dirfd, tmp_name, os.O_RDONLY)
+    if tst.st_size <= 0:
+        os.close(tfd)
+        os.unlink(tmp_name, dir_fd=dirfd)
+        os.close(dirfd)
+        die("staged speech is empty")
+    os.close(tfd)
+    try:
+        os.link(tmp_name, dest_name, src_dir_fd=dirfd, dst_dir_fd=dirfd, follow_symlinks=False)
+    except FileExistsError:
+        pass
+    os.unlink(tmp_name, dir_fd=dirfd)
+    os.close(dirfd)
+    print(os.path.join(cache_root, "speech-cache", dest_name))
+
+def cmd_discard(tmp_name):
+    if not re.fullmatch(r"\.tmp\.[0-9]+\.[0-9a-f]+", tmp_name):
+        return
+    dirfd = speech_cache_fd(False)
+    try:
+        fd, _ = open_owned_file(dirfd, tmp_name, os.O_RDONLY)
+        os.close(fd)
+        os.unlink(tmp_name, dir_fd=dirfd)
+    except FileNotFoundError:
+        pass
+    os.close(dirfd)
+
+def cmd_prune():
+    dirfd = speech_cache_fd(False)
+    names = []
+    for name in os.listdir(dirfd):
+        if not name.endswith(".wav") or name.startswith(".tmp."):
+            continue
+        try:
+            st = os.stat(name, dir_fd=dirfd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != uid:
+            continue
+        names.append((st.st_mtime, name))
+    names.sort()
+    excess = len(names) - max_files
+    i = 0
+    while i < excess:
+        try:
+            os.unlink(names[i][1], dir_fd=dirfd)
+        except FileNotFoundError:
+            pass
+        i += 1
+    os.close(dirfd)
+
+def cmd_stage_ephemeral():
+    dirfd = cache_root_fd(True)
+    for _ in range(64):
+        name = f"speech.{os.getpid()}.{time.time_ns():x}.wav"
+        try:
+            fd = os.openat(
+                dirfd,
+                name,
+                os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+        except FileExistsError:
+            continue
+        os.close(fd)
+        os.close(dirfd)
+        print(os.path.join(cache_root, name))
+        print(name)
+        return
+    os.close(dirfd)
+    die("could not create exclusive ephemeral speech file")
+
+def cmd_cleanup(path):
+    path = os.path.abspath(path)
+    cache = os.path.abspath(cache_root)
+    speech = os.path.join(cache, "speech-cache")
+    if path.startswith(speech + os.sep):
+        name = os.path.basename(path)
+        if not re.fullmatch(r"[0-9a-f]{64}\.wav", name):
+            die("refusing to remove a path outside the speech cache")
+        # Persistent hashed clips stay on disk until prune.
+        return
+    if path.startswith(cache + os.sep):
+        name = os.path.basename(path)
+        if not re.fullmatch(r"speech\.[0-9]+\.[0-9a-f]+\.wav", name):
+            die("refusing to remove a path outside the speech cache")
+        dirfd = cache_root_fd(False)
+        try:
+            fd, _ = open_owned_file(dirfd, name, os.O_RDONLY)
+            os.close(fd)
+            os.unlink(name, dir_fd=dirfd)
+        except FileNotFoundError:
+            pass
+        os.close(dirfd)
+        return
+    die("refusing to remove a path outside the speech cache")
+
+op = sys.argv[1]
+if op == "ensure":
+    cmd_ensure()
+elif op == "hit":
+    cmd_hit(sys.argv[2])
+elif op == "stage":
+    cmd_stage()
+elif op == "publish":
+    cmd_publish(sys.argv[2], sys.argv[3])
+elif op == "discard":
+    cmd_discard(sys.argv[2])
+elif op == "prune":
+    cmd_prune()
+elif op == "stage-ephemeral":
+    cmd_stage_ephemeral()
+elif op == "cleanup":
+    cmd_cleanup(sys.argv[2])
+else:
+    die("unknown speech cache operation")
+PY
 }
 
 prepare_speech() {
@@ -397,14 +604,13 @@ prepare_speech() {
   [[ -x "$PIPER_BIN" && -s "$PIPER_MODEL" && -s "$PIPER_CONFIG" ]] || die "Piper neural voice is not ready"
   command -v ffprobe >/dev/null 2>&1 || die "ffprobe is required for neural voice timing"
 
-  local speech_cache_dir="$CACHE_ROOT/speech-cache"
-  mkdir -p -- "$speech_cache_dir"
-  local cache_key="" speech_file="" duration_ms=""
+  local speech_cache_dir="" cache_key="" speech_file="" duration_ms="" dest_name="" tmp_name=""
+  speech_cache_dir="$(speech_cache_ctl ensure)"
   cache_key="$(speech_cache_key "$text" "$speed")"
-  speech_file="$speech_cache_dir/$cache_key.wav"
+  dest_name="$cache_key.wav"
+  speech_file="$speech_cache_dir/$dest_name"
 
-  if [[ -s "$speech_file" ]]; then
-    touch -- "$speech_file" 2>/dev/null || true
+  if speech_file="$(speech_cache_ctl hit "$dest_name")"; then
     duration_ms="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$speech_file" \
       | awk '{ printf "%d", ($1 * 1000) + 0.5 }')"
     [[ "$duration_ms" =~ ^[0-9]+$ ]] || die "could not measure generated speech"
@@ -412,32 +618,28 @@ prepare_speech() {
     return 0
   fi
 
-  local speech_tmp=""
-  speech_tmp="$(mktemp "$speech_cache_dir/.tmp.XXXXXX")"
-  trap 'rm -f -- "${speech_tmp:-}"' EXIT INT TERM
+  tmp_name="$(speech_cache_ctl stage)"
+  trap 'speech_cache_ctl discard "${tmp_name:-}"' EXIT INT TERM
   printf '%s\n' "$text" | "$PIPER_BIN" \
     --model "$PIPER_MODEL" \
     --config "$PIPER_CONFIG" \
-    --output-file "$speech_tmp" \
+    --output-file "$speech_cache_dir/$tmp_name" \
     --length-scale "$length_scale" \
     --sentence-silence 0.35 \
     --volume 1.05
-  duration_ms="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$speech_tmp" \
+  duration_ms="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$speech_cache_dir/$tmp_name" \
     | awk '{ printf "%d", ($1 * 1000) + 0.5 }')"
   [[ "$duration_ms" =~ ^[0-9]+$ ]] || die "could not measure generated speech"
-  mv -f -- "$speech_tmp" "$speech_file"
+  speech_file="$(speech_cache_ctl publish "$tmp_name" "$dest_name")"
   trap - EXIT INT TERM
-  prune_speech_cache "$speech_cache_dir"
+  speech_cache_ctl prune
   printf 'AUDIO\t%s\t%s\n' "$speech_file" "$duration_ms"
 }
 
 cleanup_speech_file() {
   local speech_file="${1:-}"
-  case "$speech_file" in
-    "$CACHE_ROOT"/speech-cache/*) return 0 ;;
-    "$CACHE_ROOT"/speech.*.wav) rm -f -- "$speech_file" ;;
-    *) die "refusing to remove a path outside the speech cache" ;;
-  esac
+  [[ -n "$speech_file" ]] || die "speech-cleanup requires a path"
+  speech_cache_ctl cleanup "$speech_file"
 }
 
 speak_text() {
@@ -454,16 +656,17 @@ speak_text() {
   fi
 
   if [[ -x "$PIPER_BIN" && -s "$PIPER_MODEL" && -s "$PIPER_CONFIG" ]] && command -v paplay >/dev/null 2>&1; then
-    mkdir -p -- "$CACHE_ROOT"
     local speech_file=""
     local speech_child=""
-    speech_file="$(mktemp "$CACHE_ROOT/speech.XXXXXX.wav")"
+    local stage_out=""
+    stage_out="$(speech_cache_ctl stage-ephemeral)"
+    speech_file="$(printf '%s\n' "$stage_out" | sed -n '1p')"
     cleanup_speech() {
       if [[ -n "$speech_child" ]]; then
         kill "$speech_child" 2>/dev/null || true
         wait "$speech_child" 2>/dev/null || true
       fi
-      rm -f -- "$speech_file"
+      speech_cache_ctl cleanup "$speech_file"
     }
     trap cleanup_speech EXIT INT TERM
     printf '%s\n' "$text" | "$PIPER_BIN" \

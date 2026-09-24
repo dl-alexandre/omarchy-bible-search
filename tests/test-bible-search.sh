@@ -154,7 +154,8 @@ assert_contains "$(< "$BIN")" 'trap cleanup_speech EXIT INT TERM'
 assert_contains "$(< "$BIN")" "kill \"\$speech_child\" 2>/dev/null || true"
 assert_contains "$(< "$BIN")" 'daily_verse()'
 assert_contains "$(< "$BIN")" 'command -v ffprobe >/dev/null 2>&1 || die "ffprobe is required for neural voice timing"'
-assert_contains "$(< "$BIN")" "\"\$CACHE_ROOT\"/speech.*.wav) rm -f -- \"\$speech_file\""
+assert_contains "$(< "$BIN")" "os.link(tmp_name, dest_name, src_dir_fd=dirfd, dst_dir_fd=dirfd, follow_symlinks=False)"
+assert_contains "$(< "$BIN")" "os.unlink(name, dir_fd=dirfd)"
 if [[ -e "$REPO_ROOT/bin/omarchy-bible-search-setup.py" ]]; then
   fail 'download helper bin/omarchy-bible-search-setup.py is still present'
 fi
