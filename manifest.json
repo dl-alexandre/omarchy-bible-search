@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "dev.alexandre.bible-search",
-  "name": "Bible widget",
-  "version": "0.6.7",
+  "name": "Bible Search",
+  "version": "0.6.8",
   "author": "Alexandre",
   "license": "MIT",
-  "description": "Search, copy, daily verse, and read a chapter in the bar panel.",
+  "description": "The whole World English Bible in your bar, fully offline: search any word or reference, click to copy, verse of the day, a chapter reader with saved passages, and read-aloud with local voices.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,8 +13,8 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Bible",
-    "description": "Search verses, copy, daily, read the chapter in the panel",
+    "displayName": "Bible Search",
+    "description": "Offline Bible search, daily verse, chapter reader, and read-aloud",
     "category": "Reference",
     "allowMultiple": false,
     "defaultSection": "right"

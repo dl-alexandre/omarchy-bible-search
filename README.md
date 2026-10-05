@@ -1,6 +1,16 @@
 # Bible Search
 
-Offline World English Bible lookup. The bar widget searches, copies, loads today’s verse, and reads the chapter in the panel.
+The whole World English Bible in your Omarchy bar, fully offline. Search any word, phrase, or reference, copy a verse with one click, and read or listen to the chapter without leaving the panel.
+
+![Search results for Psalm 23 next to the chapter reader](preview.png)
+
+- **Search** all 31,098 verses by word, phrase, or reference (`john 3:16`, `psalm 23`, `shepherd`).
+- **Copy** any verse to the clipboard by clicking it.
+- **Daily verse** on open, plus topic shortcuts.
+- **Reader** with paged or scrolling chapters, a book library, and Saved and Recent passages.
+- **Read aloud** with read-along highlighting, using a voice already on your machine.
+- **Keyboard driven**: arrows, Tab, Enter, and Esc cover everything.
+- **Private**: no network requests, no account, no API key. The text ships with the plugin.
 
 ## Install
 
@@ -11,6 +21,12 @@ omarchy restart shell
 ```
 
 QML does not apply until that restart.
+
+## Remove
+
+```sh
+omarchy plugin remove dev.alexandre.bible-search
+```
 
 ## Voice
 
@@ -40,7 +56,11 @@ Search uses ripgrep when available, otherwise `grep`. Daily is `day-of-year % ve
 
 ## Data
 
-Bundled public-domain WEBP in `data/books/`. There is no download or installer path.
+Bundled public-domain World English Bible (WEBP) in `data/books/`. There is no download or installer path.
+
+## License
+
+MIT for the code. The World English Bible text is in the public domain.
 
 ## Tests
 
